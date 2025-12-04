@@ -15,6 +15,10 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
     // Amélioration du traitement de la clé privée pour Railway
     let privateKey = process.env.FIREBASE_PRIVATE_KEY;
     
+    console.log('🔍 Debug: Raw private key length:', privateKey.length);
+    console.log('🔍 Debug: First 50 chars:', privateKey.substring(0, 50));
+    console.log('🔍 Debug: Last 50 chars:', privateKey.substring(privateKey.length - 50));
+    
     // Si la clé ne commence pas par BEGIN, on assume qu'elle est mal formatée
     if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
         console.error('❌ FIREBASE_PRIVATE_KEY seems to be malformed');
@@ -22,13 +26,18 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
         process.exit(1);
     }
     
-    // Nettoyage et formatage de la clé
+    // Nettoyage et formatage de la clé - version améliorée
     privateKey = privateKey
-        .replace(/\\n/g, '\n')  // Remplace \\n par de vrais retours à la ligne
-        .replace(/\s+/g, ' ')   // Normalise les espaces
-        .replace(/-----BEGIN PRIVATE KEY----- /g, '-----BEGIN PRIVATE KEY-----\n')
-        .replace(/ -----END PRIVATE KEY-----/g, '\n-----END PRIVATE KEY-----')
+        .replace(/\\n/g, '\n')          // Remplace \\n par de vrais retours à la ligne
+        .replace(/\\r\\n/g, '\n')       // Remplace \\r\\n par \n
+        .replace(/\\r/g, '\n')          // Remplace \\r par \n
+        .replace(/\r\n/g, '\n')         // Remplace \r\n par \n  
+        .replace(/\r/g, '\n')           // Remplace \r par \n
         .trim();
+
+    console.log('🔍 Debug: Processed key length:', privateKey.length);
+    console.log('🔍 Debug: Processed first 50 chars:', privateKey.substring(0, 50));
+    console.log('🔍 Debug: Processed last 50 chars:', privateKey.substring(privateKey.length - 50));
 
     firebaseConfig = {
         type: "service_account",
