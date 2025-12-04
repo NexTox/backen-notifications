@@ -12,11 +12,29 @@ let firebaseConfig;
 
 if (process.env.FIREBASE_PRIVATE_KEY) {
     // Configuration via variables d'environnement (Production)
+    // Amélioration du traitement de la clé privée pour Railway
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+    
+    // Si la clé ne commence pas par BEGIN, on assume qu'elle est mal formatée
+    if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+        console.error('❌ FIREBASE_PRIVATE_KEY seems to be malformed');
+        console.error('Make sure it starts with -----BEGIN PRIVATE KEY----- and ends with -----END PRIVATE KEY-----');
+        process.exit(1);
+    }
+    
+    // Nettoyage et formatage de la clé
+    privateKey = privateKey
+        .replace(/\\n/g, '\n')  // Remplace \\n par de vrais retours à la ligne
+        .replace(/\s+/g, ' ')   // Normalise les espaces
+        .replace(/-----BEGIN PRIVATE KEY----- /g, '-----BEGIN PRIVATE KEY-----\n')
+        .replace(/ -----END PRIVATE KEY-----/g, '\n-----END PRIVATE KEY-----')
+        .trim();
+
     firebaseConfig = {
         type: "service_account",
         project_id: process.env.FIREBASE_PROJECT_ID,
         private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-        private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        private_key: privateKey,
         client_email: process.env.FIREBASE_CLIENT_EMAIL,
         client_id: process.env.FIREBASE_CLIENT_ID,
         auth_uri: "https://accounts.google.com/o/oauth2/auth",
@@ -25,10 +43,13 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
         client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
         universe_domain: "googleapis.com"
     };
+    
+    console.log('✅ Using Firebase config from environment variables');
 } else {
     // Configuration via fichier (Développement local)
     try {
         firebaseConfig = require('./firebase-admin-key.json');
+        console.log('✅ Using Firebase config from file');
     } catch (error) {
         console.error('❌ Firebase admin key file not found and no environment variables set!');
         console.error('Please either:');
