@@ -68,10 +68,15 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
     }
 }
 
-// Initialise Firebase Admin
-admin.initializeApp({
-    credential: admin.credential.cert(firebaseConfig)
-});
+// Initialise Firebase Admin (uniquement si pas déjà initialisé)
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert(firebaseConfig)
+    });
+    console.log('✅ Firebase Admin SDK initialisé avec succès');
+} else {
+    console.log('ℹ️ Firebase Admin SDK déjà initialisé');
+}
 
 // Configuration Odoo (À MODIFIER)
 const ODOO_CONFIG = {
