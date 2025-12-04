@@ -12,21 +12,32 @@ let firebaseConfig;
 
 if (process.env.FIREBASE_PRIVATE_KEY) {
     // Configuration via variables d'environnement (Production)
-    // Amélioration du traitement de la clé privée pour Railway
     let privateKey = process.env.FIREBASE_PRIVATE_KEY;
     
     console.log('🔍 Debug: Raw private key length:', privateKey.length);
     console.log('🔍 Debug: First 50 chars:', privateKey.substring(0, 50));
     console.log('🔍 Debug: Last 50 chars:', privateKey.substring(privateKey.length - 50));
     
+    // Retirer les guillemets de début/fin si présents (cas Render)
+    privateKey = privateKey.trim();
+    if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+        console.log('⚠️  Guillemets détectés, suppression...');
+        privateKey = privateKey.slice(1, -1);
+    }
+    if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
+        console.log('⚠️  Guillemets simples détectés, suppression...');
+        privateKey = privateKey.slice(1, -1);
+    }
+
     // Si la clé ne commence pas par BEGIN, on assume qu'elle est mal formatée
     if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
         console.error('❌ FIREBASE_PRIVATE_KEY seems to be malformed');
         console.error('Make sure it starts with -----BEGIN PRIVATE KEY----- and ends with -----END PRIVATE KEY-----');
+        console.error('Current value starts with:', privateKey.substring(0, 100));
         process.exit(1);
     }
     
-    // Nettoyage et formatage de la clé - version améliorée
+    // Nettoyage et formatage de la clé - version améliorée pour Render
     privateKey = privateKey
         .replace(/\\n/g, '\n')          // Remplace \\n par de vrais retours à la ligne
         .replace(/\\r\\n/g, '\n')       // Remplace \\r\\n par \n
@@ -38,6 +49,11 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
     console.log('🔍 Debug: Processed key length:', privateKey.length);
     console.log('🔍 Debug: Processed first 50 chars:', privateKey.substring(0, 50));
     console.log('🔍 Debug: Processed last 50 chars:', privateKey.substring(privateKey.length - 50));
+
+    // Validation finale
+    const hasBegin = privateKey.startsWith('-----BEGIN PRIVATE KEY-----');
+    const hasEnd = privateKey.endsWith('-----END PRIVATE KEY-----');
+    console.log(`✅ Validation: BEGIN=${hasBegin}, END=${hasEnd}`);
 
     firebaseConfig = {
         type: "service_account",
