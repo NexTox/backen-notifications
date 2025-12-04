@@ -236,9 +236,10 @@ async function checkOdooLeaves(uid) {
 // ========================================
 
 async function sendNotification(token, title, body, data = {}) {
-  // Décommente après avoir configuré Firebase Admin
   try {
-    await admin.messaging().send({
+    console.log(`📤 Tentative d'envoi de notification : ${title}`);
+
+    const message = {
       token: token,
       notification: {
         title: title,
@@ -246,29 +247,38 @@ async function sendNotification(token, title, body, data = {}) {
       },
       data: data,
       android: {
-        priority: 'high'
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'default'
+        }
       },
       apns: {
         payload: {
           aps: {
-            sound: 'default'
+            sound: 'default',
+            badge: 1
           }
         }
       }
-    });
-    console.log(`✅ Notification envoyée : ${title}`);
+    };
+
+    const response = await admin.messaging().send(message);
+    console.log(`✅ Notification envoyée avec succès : ${title}`);
+    console.log(`📬 Message ID : ${response}`);
+    return true;
   } catch (error) {
-    console.error(`❌ Erreur FCM:`, error.message);
+    console.error(`❌ Erreur FCM pour "${title}":`, error.message);
+    console.error(`❌ Code d'erreur:`, error.code);
+
     // Supprime le token s'il est invalide
     if (error.code === 'messaging/invalid-registration-token' ||
         error.code === 'messaging/registration-token-not-registered') {
       deviceTokens = deviceTokens.filter(d => d.token !== token);
       console.log(`🗑️ Token invalide supprimé`);
     }
+    return false;
   }
-
-  // Version de debug (retire-la après avoir configuré Firebase)
-  console.log(`📤 [DEBUG] Notification à envoyer : ${title} - ${body}`);
 }
 
 // ========================================
@@ -307,12 +317,14 @@ async function startPolling() {
     if (newLeaves.length > 0) {
       for (const leave of newLeaves) {
         const title = '🎉 Nouvelle absence validée';
-        const body = `${leave.name} a été approuvée pour ${leave.employee_id[1]}`;
+        const body = `${leave.name || 'Absence'} a été approuvée pour ${leave.employee_id[1] || 'Employé'}`;
         const data = {
-          leaveId: leave.id.toString(),
-          employeeId: leave.employee_id[0].toString(),
-          dateFrom: leave.date_from,
-          dateTo: leave.date_to
+          leaveId: String(leave.id || ''),
+          employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
+          employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
+          dateFrom: String(leave.date_from || ''),
+          dateTo: String(leave.date_to || ''),
+          leaveName: String(leave.name || '')
         };
 
         // Envoie la notification à tous les appareils enregistrés
