@@ -121,6 +121,9 @@ let lastCheckedLeaveId = 0;
 // Stockage du dernier ID d'activité vérifié (pour éviter les doublons)
 let lastCheckedActivityId = 0;
 
+// Mapping des userId vers les informations d'employés (job_title, etc.)
+let employeeCache = {};
+
 // ========================================
 // ENDPOINTS
 // ========================================
@@ -136,30 +139,36 @@ app.get('/', (req, res) => {
 });
 
 // Endpoint pour enregistrer les tokens
-app.post('/register_token', (req, res) => {
-  const { token, userId, userRole } = req.body;
+app.post('/register_token', async (req, res) => {
+  const { token, userId } = req.body;
 
   if (!token) {
     return res.status(400).json({ error: 'Token manquant' });
   }
 
   // Vérifie si le token existe déjà
-  const existingIndex = deviceTokens.findIndex(d => d.token === token);
+  const existing = deviceTokens.find(d => d.token === token);
 
-  if (existingIndex === -1) {
+  if (!existing) {
+    // Récupère les informations de l'employé depuis Odoo si userId est fourni
+    let jobTitle = '';
+    if (userId && odooUid) {
+      const employeeInfo = await getEmployeeInfo(odooUid, userId);
+      if (employeeInfo) {
+        jobTitle = employeeInfo.jobTitle;
+      }
+    }
+
     deviceTokens.push({
       token,
       userId,
-      userRole: userRole || 'employee', // Rôle par défaut: employee
+      jobTitle,
       registeredAt: new Date(),
     });
-    console.log(`✅ Token enregistré pour l'utilisateur ${userId} (rôle: ${userRole || 'employee'})`);
+    console.log(`✅ Token enregistré pour l'utilisateur ${userId} (${jobTitle || 'Poste inconnu'})`);
     console.log(`📊 Total d'appareils enregistrés : ${deviceTokens.length}`);
   } else {
-    // Mettre à jour le rôle si l'utilisateur existe déjà
-    deviceTokens[existingIndex].userRole = userRole || 'employee';
-    deviceTokens[existingIndex].userId = userId;
-    console.log(`ℹ️ Token mis à jour pour l'utilisateur ${userId} (rôle: ${userRole || 'employee'})`);
+    console.log(`ℹ️ Token déjà enregistré pour l'utilisateur ${userId}`);
   }
 
   res.json({ success: true, devicesCount: deviceTokens.length });
@@ -181,117 +190,11 @@ app.get('/devices', (req, res) => {
     count: deviceTokens.length,
     devices: deviceTokens.map(d => ({
       userId: d.userId,
-      userRole: d.userRole,
+      jobTitle: d.jobTitle || 'Non spécifié',
       registeredAt: d.registeredAt,
       tokenPreview: d.token.substring(0, 20) + '...'
     }))
   });
-});
-
-// Endpoint pour récupérer le rôle d'un utilisateur depuis Odoo
-app.post('/get_user_role', async (req, res) => {
-  const { userId } = req.body;
-
-  if (!userId) {
-    return res.status(400).json({ error: 'userId manquant' });
-  }
-
-  try {
-    // Authentification Odoo
-    const uid = await authenticateOdoo();
-    if (!uid) {
-      return res.status(500).json({ error: 'Échec de l\'authentification Odoo' });
-    }
-
-    // Récupérer les informations de l'utilisateur
-    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        service: 'object',
-        method: 'execute_kw',
-        args: [
-          ODOO_CONFIG.db,
-          uid,
-          ODOO_CONFIG.password,
-          'res.users',
-          'search_read',
-          [[['id', '=', parseInt(userId)]]],
-          {
-            fields: ['id', 'name', 'groups_id']
-          }
-        ]
-      },
-      id: 1
-    });
-
-    const userData = response.data.result;
-    if (userData && userData.length > 0) {
-      const user = userData[0];
-      
-      // Récupérer les noms des groupes pour déterminer le rôle
-      const groupsResponse = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          service: 'object',
-          method: 'execute_kw',
-          args: [
-            ODOO_CONFIG.db,
-            uid,
-            ODOO_CONFIG.password,
-            'res.groups',
-            'search_read',
-            [[['id', 'in', user.groups_id]]],
-            {
-              fields: ['id', 'name', 'category_id']
-            }
-          ]
-        },
-        id: 1
-      });
-
-      const groups = groupsResponse.data.result || [];
-      const groupNames = groups.map(g => g.name.toLowerCase());
-      
-      console.log(`📋 Groupes de l'utilisateur ${userId}:`, groupNames);
-
-      // Déterminer le rôle basé sur les groupes
-      let role = 'employee';
-      
-      if (groupNames.some(name => 
-        name.includes('hr manager') || 
-        name.includes('gestionnaire rh') || 
-        name.includes('administrator') ||
-        name.includes('administrateur')
-      )) {
-        role = 'manager';
-      } else if (groupNames.some(name => 
-        name.includes('hr officer') || 
-        name.includes('responsable rh') ||
-        name.includes('time off officer') ||
-        name.includes('responsable des congés')
-      )) {
-        role = 'validator';
-      }
-
-      console.log(`✅ Rôle déterminé pour l'utilisateur ${userId}: ${role}`);
-      
-      return res.json({ 
-        success: true, 
-        role: role,
-        groups: groupNames 
-      });
-    }
-    
-    return res.json({ success: true, role: 'employee' });
-  } catch (error) {
-    console.error('❌ Erreur lors de la récupération du rôle:', error.message);
-    return res.status(500).json({ 
-      error: 'Erreur lors de la récupération du rôle',
-      details: error.message 
-    });
-  }
 });
 
 // ========================================
@@ -325,54 +228,7 @@ async function authenticateOdoo() {
   }
 }
 
-// Récupère le rôle d'un utilisateur depuis Odoo
-async function getUserRoleFromOdoo(uid, userId) {
-  try {
-    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        service: 'object',
-        method: 'execute_kw',
-        args: [
-          ODOO_CONFIG.db,
-          uid,
-          ODOO_CONFIG.password,
-          'res.users',
-          'search_read',
-          [[['id', '=', userId]]],
-          {
-            fields: ['id', 'name', 'groups_id']
-          }
-        ]
-      },
-      id: 1
-    });
-
-    const userData = response.data.result;
-    if (userData && userData.length > 0) {
-      const user = userData[0];
-      const groupIds = user.groups_id || [];
-      
-      // Vérifier les groupes Odoo pour déterminer le rôle
-      // IDs typiques (à ajuster selon votre configuration Odoo) :
-      // - Gestionnaire RH : group_hr_manager
-      // - Responsable : group_hr_user
-      // Vous devrez récupérer les IDs exacts depuis votre Odoo
-      
-      // Pour l'instant, on retourne 'employee' par défaut
-      // En production, vous devriez vérifier les groupes spécifiques
-      return 'employee';
-    }
-    
-    return 'employee';
-  } catch (error) {
-    console.error('❌ Erreur lors de la récupération du rôle utilisateur:', error.message);
-    return 'employee';
-  }
-}
-
-// Récupère les absences validées ET refusées depuis Odoo
+// Récupère les absences validées depuis Odoo
 async function checkOdooLeaves(uid) {
   try {
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
@@ -387,9 +243,9 @@ async function checkOdooLeaves(uid) {
           ODOO_CONFIG.password,
           'hr.leave',
           'search_read',
-          [[['state', 'in', ['validate', 'refuse']], ['id', '>', lastCheckedLeaveId]]],
+          [[['state', '=', 'validate'], ['id', '>', lastCheckedLeaveId]]],
           {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state'],
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to'],
             limit: 10,
             order: 'id DESC'
           }
@@ -404,11 +260,6 @@ async function checkOdooLeaves(uid) {
       // Met à jour le dernier ID vérifié
       lastCheckedLeaveId = Math.max(...leaves.map(l => l.id));
       console.log(`📬 ${leaves.length} nouvelle(s) absence(s) détectée(s)`);
-
-      // Debug: afficher les données récupérées
-      leaves.forEach(leave => {
-        console.log(`   - ID: ${leave.id}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, État: ${leave.state}`);
-      });
     }
 
     return leaves;
@@ -418,10 +269,15 @@ async function checkOdooLeaves(uid) {
   }
 }
 
-// Récupère les nouvelles demandes de congé en attente d'approbation depuis Odoo
-async function checkOdooActivities(uid) {
+// Récupère les informations d'un employé depuis Odoo (incluant job_title)
+async function getEmployeeInfo(uid, userId) {
   try {
-    // Méthode alternative: récupérer directement les demandes de congé en attente
+    // Vérifie le cache d'abord
+    if (employeeCache[userId]) {
+      console.log(`📦 Informations de l'employé ${userId} récupérées depuis le cache`);
+      return employeeCache[userId];
+    }
+
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -432,14 +288,64 @@ async function checkOdooActivities(uid) {
           ODOO_CONFIG.db,
           uid,
           ODOO_CONFIG.password,
-          'hr.leave',
+          'hr.employee',
+          'search_read',
+          [[['user_id', '=', userId]]],
+          {
+            fields: ['id', 'name', 'job_id', 'user_id'],
+            limit: 1
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const employees = response.data.result || [];
+    
+    if (employees.length > 0) {
+      const employee = employees[0];
+      const jobTitle = employee.job_id ? employee.job_id[1] : '';
+      
+      // Stocke dans le cache
+      employeeCache[userId] = {
+        employeeId: employee.id,
+        name: employee.name,
+        jobTitle: jobTitle
+      };
+      
+      console.log(`✅ Employé ${employee.name} (${jobTitle}) récupéré depuis Odoo`);
+      return employeeCache[userId];
+    }
+    
+    return null;
+  } catch (error) {
+    console.error(`❌ Erreur lors de la récupération de l'employé ${userId}:`, error.message);
+    return null;
+  }
+}
+
+// Récupère les nouvelles activités d'approbation depuis Odoo
+async function checkOdooActivities(uid) {
+  try {
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'mail.activity',
           'search_read',
           [[
-            ['state', '=', 'confirm'],  // État "À approuver"
-            ['id', '>', lastCheckedActivityId]
+            ['id', '>', lastCheckedActivityId],
+            ['res_model', '=', 'hr.leave'],
+            ['activity_type_id.name', 'in', ['To Do', 'À faire']]
           ]],
           {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state', 'number_of_days', 'notes'],
+            fields: ['id', 'summary', 'note', 'user_id', 'res_id', 'res_name', 'date_deadline', 'activity_type_id'],
             limit: 10,
             order: 'id DESC'
           }
@@ -448,22 +354,17 @@ async function checkOdooActivities(uid) {
       id: 1
     });
 
-    const pendingLeaves = response.data.result || [];
+    const activities = response.data.result || [];
 
-    if (pendingLeaves.length > 0) {
+    if (activities.length > 0) {
       // Met à jour le dernier ID vérifié
-      lastCheckedActivityId = Math.max(...pendingLeaves.map(l => l.id));
-      console.log(`📋 ${pendingLeaves.length} nouvelle(s) demande(s) de congé à approuver détectée(s)`);
-
-      // Debug: afficher les données récupérées
-      pendingLeaves.forEach(leave => {
-        console.log(`   - ID: ${leave.id}, Employé: ${leave.employee_id ? leave.employee_id[1] : 'N/A'}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}`);
-      });
+      lastCheckedActivityId = Math.max(...activities.map(a => a.id));
+      console.log(`📋 ${activities.length} nouvelle(s) activité(s) détectée(s)`);
     }
 
-    return pendingLeaves;
+    return activities;
   } catch (error) {
-    console.error('❌ Erreur lors de la récupération des demandes à approuver:', error.message);
+    console.error('❌ Erreur lors de la récupération des activités:', error.message);
     return [];
   }
 }
@@ -535,7 +436,8 @@ async function startPolling() {
 
   if (!odooUid) {
     console.error('❌ Impossible de démarrer le polling sans authentification');
-    return;
+    console.error('⚠️ Le serveur continuera mais ne pourra pas récupérer les job_title');
+    // On continue quand même pour permettre l'enregistrement des tokens
   }
 
   isPolling = true;
@@ -549,23 +451,13 @@ async function startPolling() {
 
     console.log('🔍 Vérification des nouvelles absences et activités Odoo...');
 
-    // Vérification des absences validées ET refusées
+    // Vérification des absences validées
     const newLeaves = await checkOdooLeaves(odooUid);
 
     if (newLeaves.length > 0) {
       for (const leave of newLeaves) {
-        const leaveType = leave.holiday_status_id ? leave.holiday_status_id[1] : 'Absence';
-        const isRefused = leave.state === 'refuse';
-
-        // Titre et corps de la notification selon le statut
-        const title = isRefused
-          ? '❌ Demande de congé refusée'
-          : '🎉 Demande de congé approuvée';
-
-        const body = isRefused
-          ? `Votre ${leaveType} a été refusée`
-          : `Votre ${leaveType} a été approuvée`;
-
+        const title = '🎉 Nouvelle absence validée';
+        const body = `${leave.name || 'Absence'} a été approuvée pour ${leave.employee_id[1] || 'Employé'}`;
         const data = {
           type: 'leave_validated',
           route: '/home',  // Route de navigation Flutter
@@ -575,8 +467,7 @@ async function startPolling() {
           employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
           dateFrom: String(leave.date_from || ''),
           dateTo: String(leave.date_to || ''),
-          leaveName: String(leaveType),
-          status: String(leave.state || 'validate'),
+          leaveName: String(leave.name || ''),
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
@@ -587,42 +478,40 @@ async function startPolling() {
       }
     }
 
-    // Vérification des nouvelles demandes de congé à approuver
-    const pendingLeaves = await checkOdooActivities(odooUid);
+    // Vérification des nouvelles activités d'approbation
+    const newActivities = await checkOdooActivities(odooUid);
 
-    if (pendingLeaves.length > 0) {
-      for (const leave of pendingLeaves) {
-        const leaveType = leave.holiday_status_id ? leave.holiday_status_id[1] : 'Congé';
-        const employeeName = leave.employee_id ? leave.employee_id[1] : 'Un employé';
-        const numberOfDays = leave.number_of_days || 'N/A';
+    if (newActivities.length > 0) {
+      // Filtre les appareils pour ne garder que Secretary et Managing Director
+      const authorizedDevices = deviceTokens.filter(device => {
+        const jobTitle = device.jobTitle || '';
+        return jobTitle.toLowerCase().includes('secretary') || 
+               jobTitle.toLowerCase().includes('managing director');
+      });
 
-        const title = '📋 Nouvelle demande de congé à approuver';
-        const body = `${employeeName} demande un ${leaveType} (${numberOfDays} jour${numberOfDays > 1 ? 's' : ''})`;
+      console.log(`🔐 ${authorizedDevices.length} appareil(s) autorisé(s) pour les notifications d'approbation (Secretary/Managing Director)`);
 
+      for (const activity of newActivities) {
+        const title = '📋 Nouvelle demande de congé à traiter';
+        const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
         const data = {
           type: 'leave_approval_request',
           route: '/home',  // Route de navigation Flutter
           action: 'approve_leave',  // Action spécifique dans l'app
-          leaveId: String(leave.id || ''),
-          leaveName: String(leaveType),
-          employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
-          employeeName: String(employeeName),
-          dateFrom: String(leave.date_from || ''),
-          dateTo: String(leave.date_to || ''),
-          numberOfDays: String(numberOfDays),
-          notes: String(leave.notes || ''),
-          status: 'confirm',
+          activityId: String(activity.id || ''),
+          leaveId: String(activity.res_id || ''),
+          leaveName: String(activity.res_name || ''),
+          userId: String(activity.user_id ? activity.user_id[0] : ''),
+          userName: String(activity.user_id ? activity.user_id[1] : ''),
+          deadline: String(activity.date_deadline || ''),
+          summary: String(activity.summary || ''),
+          note: String(activity.note || ''),
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
-        // Filtrer pour envoyer uniquement aux gestionnaires/validateurs
-        const managersAndValidators = deviceTokens.filter(d => 
-          d.userRole === 'manager' || d.userRole === 'validator' || d.userRole === 'admin'
-        );
-        
-        console.log(`📤 Envoi à ${managersAndValidators.length} gestionnaire(s)/validateur(s)`);
-        
-        for (const device of managersAndValidators) {
+        // Envoie la notification uniquement aux appareils autorisés (Secretary et Managing Director)
+        for (const device of authorizedDevices) {
+          console.log(`📤 Envoi notification d'approbation à ${device.jobTitle}`);
           await sendNotification(device.token, title, body, data);
         }
       }
