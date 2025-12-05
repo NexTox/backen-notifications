@@ -118,6 +118,9 @@ let deviceTokens = [];
 // Stockage du dernier ID d'absence vérifié (pour éviter les doublons)
 let lastCheckedLeaveId = 0;
 
+// Stockage du dernier ID d'absence refusée vérifié (pour éviter les doublons)
+let lastCheckedRefusedLeaveId = 0;
+
 // Stockage du dernier ID d'activité vérifié (pour éviter les doublons)
 let lastCheckedActivityId = 0;
 
@@ -300,6 +303,47 @@ async function checkOdooActivities(uid) {
   }
 }
 
+// Récupère les absences refusées depuis Odoo
+async function checkOdooRefusedLeaves(uid) {
+  try {
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.leave',
+          'search_read',
+          [[['state', '=', 'refuse'], ['id', '>', lastCheckedRefusedLeaveId]]],
+          {
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'report_note'],
+            limit: 10,
+            order: 'id DESC'
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const refusedLeaves = response.data.result || [];
+
+    if (refusedLeaves.length > 0) {
+      // Met à jour le dernier ID vérifié
+      lastCheckedRefusedLeaveId = Math.max(...refusedLeaves.map(l => l.id));
+      console.log(`❌ ${refusedLeaves.length} absence(s) refusée(s) détectée(s)`);
+    }
+
+    return refusedLeaves;
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération des absences refusées:', error.message);
+    return [];
+  }
+}
+
 // ========================================
 // FONCTION D'ENVOI DE NOTIFICATION
 // ========================================
@@ -386,8 +430,8 @@ async function startPolling() {
 
     if (newLeaves.length > 0) {
       for (const leave of newLeaves) {
-        const title = '🎉 Nouvelle absence validée';
-        const body = `${leave.name || 'Absence'} a été approuvée pour ${leave.employee_id[1] || 'Employé'}`;
+        const title = 'Your leave request has been approved';
+        const body = `${leave.name || `Your leave from ${leave.date_from || ''}`} to ${leave.date_to || ''} has been approved`;
         const data = {
           type: 'leave_validated',
           route: '/notifications',  // Route de navigation Flutter
@@ -413,8 +457,8 @@ async function startPolling() {
 
     if (newActivities.length > 0) {
       for (const activity of newActivities) {
-        const title = '📋 Nouvelle demande de congé à traiter';
-        const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
+        const title = 'New leave approval request';
+        const body = activity.summary || activity.res_name || 'A leave request requires your approval';
         const data = {
           type: 'leave_approval_request',
           route: '/notifications',  // Route de navigation Flutter
@@ -432,6 +476,34 @@ async function startPolling() {
 
         // Envoie la notification à tous les appareils enregistrés
         // Note: En production, tu devrais filtrer pour envoyer uniquement aux managers/validateurs
+        for (const device of deviceTokens) {
+          await sendNotification(device.token, title, body, data);
+        }
+      }
+    }
+
+    // Vérification des absences refusées
+    const refusedLeaves = await checkOdooRefusedLeaves(odooUid);
+
+    if (refusedLeaves.length > 0) {
+      for (const leave of refusedLeaves) {
+        const title = 'Your leave request has been refused';
+        const body = '${leave.name || `Your leave from ${leave.date_from || ''}`} to ${leave.date_to || ''} has been refused';
+        const data = {
+          type: 'leave_refused',
+          route: '/home',  // Route de navigation Flutter
+          action: 'view_refused',  // Action spécifique dans l'app
+          leaveId: String(leave.id || ''),
+          employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
+          employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
+          dateFrom: String(leave.date_from || ''),
+          dateTo: String(leave.date_to || ''),
+          leaveName: String(leave.name || ''),
+          refusalReason: String(leave.report_note || 'Aucune raison spécifiée'),
+          clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
+        };
+
+        // Envoie la notification à tous les appareils enregistrés
         for (const device of deviceTokens) {
           await sendNotification(device.token, title, body, data);
         }
