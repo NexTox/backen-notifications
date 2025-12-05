@@ -13,11 +13,11 @@ let firebaseConfig;
 if (process.env.FIREBASE_PRIVATE_KEY) {
     // Configuration via variables d'environnement (Production)
     let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-    
+
     console.log('🔍 Debug: Raw private key length:', privateKey.length);
     console.log('🔍 Debug: First 50 chars:', privateKey.substring(0, 50));
     console.log('🔍 Debug: Last 50 chars:', privateKey.substring(privateKey.length - 50));
-    
+
     // Retirer les guillemets de début/fin si présents (cas Render)
     privateKey = privateKey.trim();
     if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
@@ -36,13 +36,13 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
         console.error('Current value starts with:', privateKey.substring(0, 100));
         process.exit(1);
     }
-    
+
     // Nettoyage et formatage de la clé - version améliorée pour Render
     privateKey = privateKey
         .replace(/\\n/g, '\n')          // Remplace \\n par de vrais retours à la ligne
         .replace(/\\r\\n/g, '\n')       // Remplace \\r\\n par \n
         .replace(/\\r/g, '\n')          // Remplace \\r par \n
-        .replace(/\r\n/g, '\n')         // Remplace \r\n par \n  
+        .replace(/\r\n/g, '\n')         // Remplace \r\n par \n
         .replace(/\r/g, '\n')           // Remplace \r par \n
         .trim();
 
@@ -68,7 +68,7 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
         client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
         universe_domain: "googleapis.com"
     };
-    
+
     console.log('✅ Using Firebase config from environment variables');
 } else {
     // Configuration via fichier (Développement local)
@@ -117,11 +117,6 @@ let deviceTokens = [];
 
 // Stockage du dernier ID d'absence vérifié (pour éviter les doublons)
 let lastCheckedLeaveId = 0;
-
-// Stockage du dernier ID d'absence refusée vérifié (pour éviter les doublons)
-// ⚠️ TEMPORAIRE: Mis à 35 pour re-détecter le congé refusé ID 36
-// ⚠️ En production, remettre à 0 pour ne détecter que les NOUVEAUX refus
-let lastCheckedRefusedLeaveId = 35; // ID juste avant le refus existant
 
 // Stockage du dernier ID d'activité vérifié (pour éviter les doublons)
 let lastCheckedActivityId = 0;
@@ -219,7 +214,7 @@ async function authenticateOdoo() {
   }
 }
 
-// Récupère les absences validées depuis Odoo
+// Récupère les absences validées ET refusées depuis Odoo
 async function checkOdooLeaves(uid) {
   try {
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
@@ -234,9 +229,9 @@ async function checkOdooLeaves(uid) {
           ODOO_CONFIG.password,
           'hr.leave',
           'search_read',
-          [[['state', '=', 'validate'], ['id', '>', lastCheckedLeaveId]]],
+          [[['state', 'in', ['validate', 'refuse']], ['id', '>', lastCheckedLeaveId]]],
           {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to'],
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state'],
             limit: 10,
             order: 'id DESC'
           }
@@ -251,6 +246,11 @@ async function checkOdooLeaves(uid) {
       // Met à jour le dernier ID vérifié
       lastCheckedLeaveId = Math.max(...leaves.map(l => l.id));
       console.log(`📬 ${leaves.length} nouvelle(s) absence(s) détectée(s)`);
+
+      // Debug: afficher les données récupérées
+      leaves.forEach(leave => {
+        console.log(`   - ID: ${leave.id}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, État: ${leave.state}`);
+      });
     }
 
     return leaves;
@@ -301,59 +301,6 @@ async function checkOdooActivities(uid) {
     return activities;
   } catch (error) {
     console.error('❌ Erreur lors de la récupération des activités:', error.message);
-    return [];
-  }
-}
-
-// Récupère les absences refusées depuis Odoo
-async function checkOdooRefusedLeaves(uid) {
-  try {
-    console.log(`🔍 Recherche des congés refusés (lastCheckedRefusedLeaveId: ${lastCheckedRefusedLeaveId})...`);
-
-    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
-      jsonrpc: '2.0',
-      method: 'call',
-      params: {
-        service: 'object',
-        method: 'execute_kw',
-        args: [
-          ODOO_CONFIG.db,
-          uid,
-          ODOO_CONFIG.password,
-          'hr.leave',
-          'search_read',
-          [[['state', 'in', ['refuse', 'refused']], ['id', '>', lastCheckedRefusedLeaveId]]],
-          {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'report_note', 'state'],
-            limit: 10,
-            order: 'id DESC'
-          }
-        ]
-      },
-      id: 1
-    });
-
-    const refusedLeaves = response.data.result || [];
-
-    console.log(`📊 Résultat de la recherche: ${refusedLeaves.length} congé(s) refusé(s) trouvé(s)`);
-
-    if (refusedLeaves.length > 0) {
-      refusedLeaves.forEach(leave => {
-        console.log(`   - ID ${leave.id}: ${leave.name || 'Sans nom'}, état: ${leave.state}`);
-      });
-
-      // Met à jour le dernier ID vérifié
-      lastCheckedRefusedLeaveId = Math.max(...refusedLeaves.map(l => l.id));
-      console.log(`❌ ${refusedLeaves.length} absence(s) refusée(s) détectée(s)`);
-      console.log(`📌 Nouveau lastCheckedRefusedLeaveId: ${lastCheckedRefusedLeaveId}`);
-    }
-
-    return refusedLeaves;
-  } catch (error) {
-    console.error('❌ Erreur lors de la récupération des absences refusées:', error.message);
-    if (error.response && error.response.data) {
-      console.error('Détails de l\'erreur:', JSON.stringify(error.response.data, null, 2));
-    }
     return [];
   }
 }
@@ -439,23 +386,34 @@ async function startPolling() {
 
     console.log('🔍 Vérification des nouvelles absences et activités Odoo...');
 
-    // Vérification des absences validées
+    // Vérification des absences validées ET refusées
     const newLeaves = await checkOdooLeaves(odooUid);
 
     if (newLeaves.length > 0) {
       for (const leave of newLeaves) {
-        const title = 'Your leave request has been approved';
-        const body = `Your leave from ${leave.date_from || ''} to ${leave.date_to || ''} has been approved`;
+        const leaveType = leave.holiday_status_id ? leave.holiday_status_id[1] : 'Absence';
+        const isRefused = leave.state === 'refuse';
+
+        // Titre et corps de la notification selon le statut
+        const title = isRefused
+          ? '❌ Demande de congé refusée'
+          : '🎉 Demande de congé approuvée';
+
+        const body = isRefused
+          ? `Votre ${leaveType} a été refusée`
+          : `Votre ${leaveType} a été approuvée`;
+
         const data = {
           type: 'leave_validated',
-          route: '/notifications',  // Route de navigation Flutter
+          route: '/home',  // Route de navigation Flutter
           action: 'view_calendar',  // Action spécifique dans l'app
           leaveId: String(leave.id || ''),
           employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
           employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
           dateFrom: String(leave.date_from || ''),
           dateTo: String(leave.date_to || ''),
-          leaveName: String(leave.name || ''),
+          leaveName: String(leaveType),
+          status: String(leave.state || 'validate'),
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
@@ -471,11 +429,11 @@ async function startPolling() {
 
     if (newActivities.length > 0) {
       for (const activity of newActivities) {
-        const title = 'New leave approval request';
-        const body = activity.summary || activity.res_name || 'A leave request requires your approval';
+        const title = '📋 Nouvelle demande de congé à traiter';
+        const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
         const data = {
           type: 'leave_approval_request',
-          route: '/notifications',  // Route de navigation Flutter
+          route: '/home',  // Route de navigation Flutter
           action: 'approve_leave',  // Action spécifique dans l'app
           activityId: String(activity.id || ''),
           leaveId: String(activity.res_id || ''),
@@ -490,35 +448,6 @@ async function startPolling() {
 
         // Envoie la notification à tous les appareils enregistrés
         // Note: En production, tu devrais filtrer pour envoyer uniquement aux managers/validateurs
-        for (const device of deviceTokens) {
-          await sendNotification(device.token, title, body, data);
-        }
-      }
-    }
-
-    // Vérification des absences refusées
-    console.log('3️⃣ Vérification des absences refusées...');
-    const refusedLeaves = await checkOdooRefusedLeaves(odooUid);
-
-    if (refusedLeaves.length > 0) {
-      for (const leave of refusedLeaves) {
-        const title = 'Your leave request has been refused';
-        const body =  `Your leave from ${leave.date_from || ''} to ${leave.date_to || ''} has been refused`;
-        const data = {
-          type: 'leave_refused',
-          route: '/home',  // Route de navigation Flutter
-          action: 'view_refused',  // Action spécifique dans l'app
-          leaveId: String(leave.id || ''),
-          employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
-          employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
-          dateFrom: String(leave.date_from || ''),
-          dateTo: String(leave.date_to || ''),
-          leaveName: String(leave.name || ''),
-          refusalReason: String(leave.report_note || 'Aucune raison spécifiée'),
-          clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
-        };
-
-        // Envoie la notification à tous les appareils enregistrés
         for (const device of deviceTokens) {
           await sendNotification(device.token, title, body, data);
         }
