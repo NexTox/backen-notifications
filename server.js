@@ -306,6 +306,8 @@ async function checkOdooActivities(uid) {
 // Récupère les absences refusées depuis Odoo
 async function checkOdooRefusedLeaves(uid) {
   try {
+    console.log(`🔍 Recherche des congés refusés (lastCheckedRefusedLeaveId: ${lastCheckedRefusedLeaveId})...`);
+
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -331,15 +333,25 @@ async function checkOdooRefusedLeaves(uid) {
 
     const refusedLeaves = response.data.result || [];
 
+    console.log(`📊 Résultat de la recherche: ${refusedLeaves.length} congé(s) refusé(s) trouvé(s)`);
+
     if (refusedLeaves.length > 0) {
+      refusedLeaves.forEach(leave => {
+        console.log(`   - ID ${leave.id}: ${leave.name || 'Sans nom'}, état: ${leave.state}`);
+      });
+
       // Met à jour le dernier ID vérifié
       lastCheckedRefusedLeaveId = Math.max(...refusedLeaves.map(l => l.id));
       console.log(`❌ ${refusedLeaves.length} absence(s) refusée(s) détectée(s)`);
+      console.log(`📌 Nouveau lastCheckedRefusedLeaveId: ${lastCheckedRefusedLeaveId}`);
     }
 
     return refusedLeaves;
   } catch (error) {
     console.error('❌ Erreur lors de la récupération des absences refusées:', error.message);
+    if (error.response && error.response.data) {
+      console.error('Détails de l\'erreur:', JSON.stringify(error.response.data, null, 2));
+    }
     return [];
   }
 }
@@ -483,6 +495,7 @@ async function startPolling() {
     }
 
     // Vérification des absences refusées
+    console.log('3️⃣ Vérification des absences refusées...');
     const refusedLeaves = await checkOdooRefusedLeaves(odooUid);
 
     if (refusedLeaves.length > 0) {
