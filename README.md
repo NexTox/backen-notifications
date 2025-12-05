@@ -2,6 +2,24 @@
 
 Serveur backend qui interroge l'API Odoo et envoie des notifications push via Firebase Cloud Messaging.
 
+## 📋 Types de notifications
+
+### 1. Absences validées (leave_validated)
+Notifie tous les utilisateurs lorsqu'une absence est validée dans Odoo.
+
+### 2. Demandes d'approbation (leave_approval_request)
+Notifie les managers/validateurs lorsqu'une nouvelle activité d'approbation de congé est créée dans Odoo.
+
+**Données incluses dans la notification :**
+- `activityId` : ID de l'activité Odoo
+- `leaveId` : ID de la demande de congé
+- `leaveName` : Nom de la demande
+- `userId` : ID de l'utilisateur assigné
+- `userName` : Nom de l'utilisateur assigné
+- `deadline` : Date limite de traitement
+- `summary` : Résumé de l'activité
+- `note` : Notes additionnelles
+
 ## 📋 Configuration
 
 ### 1. Installe les dépendances
@@ -129,9 +147,19 @@ Liste les appareils enregistrés (debug)
 ## 🔧 Fonctionnement
 
 1. Le serveur s'authentifie auprès d'Odoo
-2. Toutes les 30 secondes, il interroge l'API Odoo pour les nouvelles absences validées
+2. Toutes les 30 secondes, il interroge l'API Odoo pour :
+   - Les nouvelles absences validées (`hr.leave` avec `state='validate'`)
+   - Les nouvelles activités d'approbation (`mail.activity` liées aux congés)
 3. Si de nouvelles absences sont détectées, il envoie une notification à tous les appareils enregistrés
-4. Les tokens invalides sont automatiquement supprimés
+4. Si de nouvelles activités d'approbation sont détectées, il envoie une notification aux managers/validateurs
+5. Les IDs déjà traités sont mémorisés pour éviter les doublons
+6. Les tokens invalides sont automatiquement supprimés
+
+## 📚 Documentation supplémentaire
+
+- **[ACTIVITIES_GUIDE.md](./ACTIVITIES_GUIDE.md)** : Guide détaillé sur les notifications d'activités d'approbation
+- **[DEPLOY_GUIDE.md](./DEPLOY_GUIDE.md)** : Guide de déploiement
+- **[flutter_notification_handler_example.dart](./flutter_notification_handler_example.dart)** : Exemple de gestion des notifications dans Flutter
 
 ## 📝 TODO après configuration
 

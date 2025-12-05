@@ -118,6 +118,9 @@ let deviceTokens = [];
 // Stockage du dernier ID d'absence vérifié (pour éviter les doublons)
 let lastCheckedLeaveId = 0;
 
+// Stockage du dernier ID d'activité vérifié (pour éviter les doublons)
+let lastCheckedActivityId = 0;
+
 // ========================================
 // ENDPOINTS
 // ========================================
@@ -252,6 +255,51 @@ async function checkOdooLeaves(uid) {
   }
 }
 
+// Récupère les nouvelles activités d'approbation depuis Odoo
+async function checkOdooActivities(uid) {
+  try {
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'mail.activity',
+          'search_read',
+          [[
+            ['id', '>', lastCheckedActivityId],
+            ['res_model', '=', 'hr.leave'],
+            ['activity_type_id.name', 'in', ['To Do', 'À faire']]
+          ]],
+          {
+            fields: ['id', 'summary', 'note', 'user_id', 'res_id', 'res_name', 'date_deadline', 'activity_type_id'],
+            limit: 10,
+            order: 'id DESC'
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const activities = response.data.result || [];
+
+    if (activities.length > 0) {
+      // Met à jour le dernier ID vérifié
+      lastCheckedActivityId = Math.max(...activities.map(a => a.id));
+      console.log(`📋 ${activities.length} nouvelle(s) activité(s) détectée(s)`);
+    }
+
+    return activities;
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération des activités:', error.message);
+    return [];
+  }
+}
+
 // ========================================
 // FONCTION D'ENVOI DE NOTIFICATION
 // ========================================
@@ -331,8 +379,9 @@ async function startPolling() {
       return;
     }
 
-    console.log('🔍 Vérification des nouvelles absences Odoo...');
+    console.log('🔍 Vérification des nouvelles absences et activités Odoo...');
 
+    // Vérification des absences validées
     const newLeaves = await checkOdooLeaves(odooUid);
 
     if (newLeaves.length > 0) {
@@ -340,6 +389,7 @@ async function startPolling() {
         const title = '🎉 Nouvelle absence validée';
         const body = `${leave.name || 'Absence'} a été approuvée pour ${leave.employee_id[1] || 'Employé'}`;
         const data = {
+          type: 'leave_validated',
           leaveId: String(leave.id || ''),
           employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
           employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
@@ -349,6 +399,33 @@ async function startPolling() {
         };
 
         // Envoie la notification à tous les appareils enregistrés
+        for (const device of deviceTokens) {
+          await sendNotification(device.token, title, body, data);
+        }
+      }
+    }
+
+    // Vérification des nouvelles activités d'approbation
+    const newActivities = await checkOdooActivities(odooUid);
+
+    if (newActivities.length > 0) {
+      for (const activity of newActivities) {
+        const title = '📋 Nouvelle demande de congé à traiter';
+        const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
+        const data = {
+          type: 'leave_approval_request',
+          activityId: String(activity.id || ''),
+          leaveId: String(activity.res_id || ''),
+          leaveName: String(activity.res_name || ''),
+          userId: String(activity.user_id ? activity.user_id[0] : ''),
+          userName: String(activity.user_id ? activity.user_id[1] : ''),
+          deadline: String(activity.date_deadline || ''),
+          summary: String(activity.summary || ''),
+          note: String(activity.note || '')
+        };
+
+        // Envoie la notification à tous les appareils enregistrés
+        // Note: En production, tu devrais filtrer pour envoyer uniquement aux managers/validateurs
         for (const device of deviceTokens) {
           await sendNotification(device.token, title, body, data);
         }
