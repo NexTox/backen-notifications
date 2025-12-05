@@ -137,25 +137,29 @@ app.get('/', (req, res) => {
 
 // Endpoint pour enregistrer les tokens
 app.post('/register_token', (req, res) => {
-  const { token, userId } = req.body;
+  const { token, userId, userRole } = req.body;
 
   if (!token) {
     return res.status(400).json({ error: 'Token manquant' });
   }
 
   // Vérifie si le token existe déjà
-  const existing = deviceTokens.find(d => d.token === token);
+  const existingIndex = deviceTokens.findIndex(d => d.token === token);
 
-  if (!existing) {
+  if (existingIndex === -1) {
     deviceTokens.push({
       token,
       userId,
+      userRole: userRole || 'employee', // Rôle par défaut: employee
       registeredAt: new Date(),
     });
-    console.log(`✅ Token enregistré pour l'utilisateur ${userId}`);
+    console.log(`✅ Token enregistré pour l'utilisateur ${userId} (rôle: ${userRole || 'employee'})`);
     console.log(`📊 Total d'appareils enregistrés : ${deviceTokens.length}`);
   } else {
-    console.log(`ℹ️ Token déjà enregistré pour l'utilisateur ${userId}`);
+    // Mettre à jour le rôle si l'utilisateur existe déjà
+    deviceTokens[existingIndex].userRole = userRole || 'employee';
+    deviceTokens[existingIndex].userId = userId;
+    console.log(`ℹ️ Token mis à jour pour l'utilisateur ${userId} (rôle: ${userRole || 'employee'})`);
   }
 
   res.json({ success: true, devicesCount: deviceTokens.length });
@@ -177,10 +181,117 @@ app.get('/devices', (req, res) => {
     count: deviceTokens.length,
     devices: deviceTokens.map(d => ({
       userId: d.userId,
+      userRole: d.userRole,
       registeredAt: d.registeredAt,
       tokenPreview: d.token.substring(0, 20) + '...'
     }))
   });
+});
+
+// Endpoint pour récupérer le rôle d'un utilisateur depuis Odoo
+app.post('/get_user_role', async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId manquant' });
+  }
+
+  try {
+    // Authentification Odoo
+    const uid = await authenticateOdoo();
+    if (!uid) {
+      return res.status(500).json({ error: 'Échec de l\'authentification Odoo' });
+    }
+
+    // Récupérer les informations de l'utilisateur
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'res.users',
+          'search_read',
+          [[['id', '=', parseInt(userId)]]],
+          {
+            fields: ['id', 'name', 'groups_id']
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const userData = response.data.result;
+    if (userData && userData.length > 0) {
+      const user = userData[0];
+      
+      // Récupérer les noms des groupes pour déterminer le rôle
+      const groupsResponse = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          service: 'object',
+          method: 'execute_kw',
+          args: [
+            ODOO_CONFIG.db,
+            uid,
+            ODOO_CONFIG.password,
+            'res.groups',
+            'search_read',
+            [[['id', 'in', user.groups_id]]],
+            {
+              fields: ['id', 'name', 'category_id']
+            }
+          ]
+        },
+        id: 1
+      });
+
+      const groups = groupsResponse.data.result || [];
+      const groupNames = groups.map(g => g.name.toLowerCase());
+      
+      console.log(`📋 Groupes de l'utilisateur ${userId}:`, groupNames);
+
+      // Déterminer le rôle basé sur les groupes
+      let role = 'employee';
+      
+      if (groupNames.some(name => 
+        name.includes('hr manager') || 
+        name.includes('gestionnaire rh') || 
+        name.includes('administrator') ||
+        name.includes('administrateur')
+      )) {
+        role = 'manager';
+      } else if (groupNames.some(name => 
+        name.includes('hr officer') || 
+        name.includes('responsable rh') ||
+        name.includes('time off officer') ||
+        name.includes('responsable des congés')
+      )) {
+        role = 'validator';
+      }
+
+      console.log(`✅ Rôle déterminé pour l'utilisateur ${userId}: ${role}`);
+      
+      return res.json({ 
+        success: true, 
+        role: role,
+        groups: groupNames 
+      });
+    }
+    
+    return res.json({ success: true, role: 'employee' });
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération du rôle:', error.message);
+    return res.status(500).json({ 
+      error: 'Erreur lors de la récupération du rôle',
+      details: error.message 
+    });
+  }
 });
 
 // ========================================
@@ -211,6 +322,53 @@ async function authenticateOdoo() {
   } catch (error) {
     console.error('❌ Erreur lors de l\'authentification Odoo:', error.message);
     return null;
+  }
+}
+
+// Récupère le rôle d'un utilisateur depuis Odoo
+async function getUserRoleFromOdoo(uid, userId) {
+  try {
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'res.users',
+          'search_read',
+          [[['id', '=', userId]]],
+          {
+            fields: ['id', 'name', 'groups_id']
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const userData = response.data.result;
+    if (userData && userData.length > 0) {
+      const user = userData[0];
+      const groupIds = user.groups_id || [];
+      
+      // Vérifier les groupes Odoo pour déterminer le rôle
+      // IDs typiques (à ajuster selon votre configuration Odoo) :
+      // - Gestionnaire RH : group_hr_manager
+      // - Responsable : group_hr_user
+      // Vous devrez récupérer les IDs exacts depuis votre Odoo
+      
+      // Pour l'instant, on retourne 'employee' par défaut
+      // En production, vous devriez vérifier les groupes spécifiques
+      return 'employee';
+    }
+    
+    return 'employee';
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération du rôle utilisateur:', error.message);
+    return 'employee';
   }
 }
 
@@ -457,10 +615,14 @@ async function startPolling() {
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
-        // Envoie la notification à tous les appareils enregistrés
-        // TODO: En production, filtrer pour envoyer uniquement aux gestionnaires/validateurs
-        // Pour l'instant, on envoie à tous les appareils
-        for (const device of deviceTokens) {
+        // Filtrer pour envoyer uniquement aux gestionnaires/validateurs
+        const managersAndValidators = deviceTokens.filter(d => 
+          d.userRole === 'manager' || d.userRole === 'validator' || d.userRole === 'admin'
+        );
+        
+        console.log(`📤 Envoi à ${managersAndValidators.length} gestionnaire(s)/validateur(s)`);
+        
+        for (const device of managersAndValidators) {
           await sendNotification(device.token, title, body, data);
         }
       }
