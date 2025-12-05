@@ -119,7 +119,9 @@ let deviceTokens = [];
 let lastCheckedLeaveId = 0;
 
 // Stockage du dernier ID d'absence refusée vérifié (pour éviter les doublons)
-let lastCheckedRefusedLeaveId = 0;
+// ⚠️ TEMPORAIRE: Mis à 35 pour re-détecter le congé refusé ID 36
+// ⚠️ En production, remettre à 0 pour ne détecter que les NOUVEAUX refus
+let lastCheckedRefusedLeaveId = 35; // ID juste avant le refus existant
 
 // Stockage du dernier ID d'activité vérifié (pour éviter les doublons)
 let lastCheckedActivityId = 0;

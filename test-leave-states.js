@@ -144,6 +144,17 @@ async function testRefusedLeaves() {
   if (refusedStates.length > 0) {
     console.log(`   État(s) de refus trouvé(s): ${refusedStates.join(', ')}`);
     console.log(`   ➡️  Utilisez: state in [${refusedStates.map(s => `'${s}'`).join(', ')}]`);
+
+    // Afficher l'ID max des refusés
+    const allRefused = refusedStates.flatMap(state => byState[state]);
+    if (allRefused.length > 0) {
+      const maxId = Math.max(...allRefused.map(l => l.id));
+      console.log(`\n   📌 ID maximum des congés refusés: ${maxId}`);
+      console.log(`   ➡️  Le serveur doit avoir lastCheckedRefusedLeaveId < ${maxId} pour les détecter`);
+      console.log(`   ➡️  Actuellement le serveur a: lastCheckedRefusedLeaveId = 0`);
+      console.log(`\n   ⚠️  PROBLÈME: Les congés refusés existants ont été créés AVANT le démarrage du serveur`);
+      console.log(`   ✅  SOLUTION: Refusez une NOUVELLE demande dans Odoo (ID > ${maxId})`);
+    }
   } else {
     console.log('   ⚠️  AUCUN état de refus trouvé dans les 20 derniers congés');
     console.log('   ➡️  Refusez d\'abord une demande dans Odoo, puis relancez ce test');
