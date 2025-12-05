@@ -390,7 +390,7 @@ async function startPolling() {
         const body = `${leave.name || 'Absence'} a été approuvée pour ${leave.employee_id[1] || 'Employé'}`;
         const data = {
           type: 'leave_validated',
-          route: '/home',  // Route de navigation Flutter
+          route: '/notifications',  // Route de navigation Flutter
           action: 'view_calendar',  // Action spécifique dans l'app
           leaveId: String(leave.id || ''),
           employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
@@ -417,7 +417,7 @@ async function startPolling() {
         const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
         const data = {
           type: 'leave_approval_request',
-          route: '/home',  // Route de navigation Flutter
+          route: '/notifications',  // Route de navigation Flutter
           action: 'approve_leave',  // Action spécifique dans l'app
           activityId: String(activity.id || ''),
           leaveId: String(activity.res_id || ''),
