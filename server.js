@@ -488,7 +488,7 @@ async function startPolling() {
     if (refusedLeaves.length > 0) {
       for (const leave of refusedLeaves) {
         const title = 'Your leave request has been refused';
-        const body = '${leave.name || `Your leave from ${leave.date_from || ''}`} to ${leave.date_to || ''} has been refused';
+        const body =  `Your leave from ${leave.date_from || ''} to ${leave.date_to || ''} has been refused`;
         const data = {
           type: 'leave_refused',
           route: '/home',  // Route de navigation Flutter
