@@ -318,9 +318,9 @@ async function checkOdooRefusedLeaves(uid) {
           ODOO_CONFIG.password,
           'hr.leave',
           'search_read',
-          [[['state', '=', 'refuse'], ['id', '>', lastCheckedRefusedLeaveId]]],
+          [[['state', 'in', ['refuse', 'refused']], ['id', '>', lastCheckedRefusedLeaveId]]],
           {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'report_note'],
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'report_note', 'state'],
             limit: 10,
             order: 'id DESC'
           }
