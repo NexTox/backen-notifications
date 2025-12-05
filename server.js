@@ -431,7 +431,7 @@ async function startPolling() {
     if (newLeaves.length > 0) {
       for (const leave of newLeaves) {
         const title = 'Your leave request has been approved';
-        const body = `${leave.name || `Your leave from ${leave.date_from || ''}`} to ${leave.date_to || ''} has been approved`;
+        const body = `Your leave from ${leave.date_from || ''} to ${leave.date_to || ''} has been approved`;
         const data = {
           type: 'leave_validated',
           route: '/notifications',  // Route de navigation Flutter
