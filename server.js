@@ -390,12 +390,15 @@ async function startPolling() {
         const body = `${leave.name || 'Absence'} a été approuvée pour ${leave.employee_id[1] || 'Employé'}`;
         const data = {
           type: 'leave_validated',
+          route: '/home',  // Route de navigation Flutter
+          action: 'view_calendar',  // Action spécifique dans l'app
           leaveId: String(leave.id || ''),
           employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
           employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
           dateFrom: String(leave.date_from || ''),
           dateTo: String(leave.date_to || ''),
-          leaveName: String(leave.name || '')
+          leaveName: String(leave.name || ''),
+          clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
         // Envoie la notification à tous les appareils enregistrés
@@ -414,6 +417,8 @@ async function startPolling() {
         const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
         const data = {
           type: 'leave_approval_request',
+          route: '/home',  // Route de navigation Flutter
+          action: 'approve_leave',  // Action spécifique dans l'app
           activityId: String(activity.id || ''),
           leaveId: String(activity.res_id || ''),
           leaveName: String(activity.res_name || ''),
@@ -421,7 +426,8 @@ async function startPolling() {
           userName: String(activity.user_id ? activity.user_id[1] : ''),
           deadline: String(activity.date_deadline || ''),
           summary: String(activity.summary || ''),
-          note: String(activity.note || '')
+          note: String(activity.note || ''),
+          clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
         // Envoie la notification à tous les appareils enregistrés
