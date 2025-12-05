@@ -13,11 +13,11 @@ let firebaseConfig;
 if (process.env.FIREBASE_PRIVATE_KEY) {
     // Configuration via variables d'environnement (Production)
     let privateKey = process.env.FIREBASE_PRIVATE_KEY;
-
+    
     console.log('🔍 Debug: Raw private key length:', privateKey.length);
     console.log('🔍 Debug: First 50 chars:', privateKey.substring(0, 50));
     console.log('🔍 Debug: Last 50 chars:', privateKey.substring(privateKey.length - 50));
-
+    
     // Retirer les guillemets de début/fin si présents (cas Render)
     privateKey = privateKey.trim();
     if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
@@ -36,13 +36,13 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
         console.error('Current value starts with:', privateKey.substring(0, 100));
         process.exit(1);
     }
-
+    
     // Nettoyage et formatage de la clé - version améliorée pour Render
     privateKey = privateKey
         .replace(/\\n/g, '\n')          // Remplace \\n par de vrais retours à la ligne
         .replace(/\\r\\n/g, '\n')       // Remplace \\r\\n par \n
         .replace(/\\r/g, '\n')          // Remplace \\r par \n
-        .replace(/\r\n/g, '\n')         // Remplace \r\n par \n
+        .replace(/\r\n/g, '\n')         // Remplace \r\n par \n  
         .replace(/\r/g, '\n')           // Remplace \r par \n
         .trim();
 
@@ -68,7 +68,7 @@ if (process.env.FIREBASE_PRIVATE_KEY) {
         client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
         universe_domain: "googleapis.com"
     };
-
+    
     console.log('✅ Using Firebase config from environment variables');
 } else {
     // Configuration via fichier (Développement local)
@@ -260,9 +260,10 @@ async function checkOdooLeaves(uid) {
   }
 }
 
-// Récupère les nouvelles activités d'approbation depuis Odoo
+// Récupère les nouvelles demandes de congé en attente d'approbation depuis Odoo
 async function checkOdooActivities(uid) {
   try {
+    // Méthode alternative: récupérer directement les demandes de congé en attente
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -273,15 +274,14 @@ async function checkOdooActivities(uid) {
           ODOO_CONFIG.db,
           uid,
           ODOO_CONFIG.password,
-          'mail.activity',
+          'hr.leave',
           'search_read',
           [[
-            ['id', '>', lastCheckedActivityId],
-            ['res_model', '=', 'hr.leave'],
-            ['activity_type_id.name', 'in', ['To Do', 'À faire']]
+            ['state', '=', 'confirm'],  // État "À approuver"
+            ['id', '>', lastCheckedActivityId]
           ]],
           {
-            fields: ['id', 'summary', 'note', 'user_id', 'res_id', 'res_name', 'date_deadline', 'activity_type_id'],
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state', 'number_of_days', 'notes'],
             limit: 10,
             order: 'id DESC'
           }
@@ -290,17 +290,22 @@ async function checkOdooActivities(uid) {
       id: 1
     });
 
-    const activities = response.data.result || [];
+    const pendingLeaves = response.data.result || [];
 
-    if (activities.length > 0) {
+    if (pendingLeaves.length > 0) {
       // Met à jour le dernier ID vérifié
-      lastCheckedActivityId = Math.max(...activities.map(a => a.id));
-      console.log(`📋 ${activities.length} nouvelle(s) activité(s) détectée(s)`);
+      lastCheckedActivityId = Math.max(...pendingLeaves.map(l => l.id));
+      console.log(`📋 ${pendingLeaves.length} nouvelle(s) demande(s) de congé à approuver détectée(s)`);
+
+      // Debug: afficher les données récupérées
+      pendingLeaves.forEach(leave => {
+        console.log(`   - ID: ${leave.id}, Employé: ${leave.employee_id ? leave.employee_id[1] : 'N/A'}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}`);
+      });
     }
 
-    return activities;
+    return pendingLeaves;
   } catch (error) {
-    console.error('❌ Erreur lors de la récupération des activités:', error.message);
+    console.error('❌ Erreur lors de la récupération des demandes à approuver:', error.message);
     return [];
   }
 }
@@ -424,30 +429,37 @@ async function startPolling() {
       }
     }
 
-    // Vérification des nouvelles activités d'approbation
-    const newActivities = await checkOdooActivities(odooUid);
+    // Vérification des nouvelles demandes de congé à approuver
+    const pendingLeaves = await checkOdooActivities(odooUid);
 
-    if (newActivities.length > 0) {
-      for (const activity of newActivities) {
-        const title = '📋 Nouvelle demande de congé à traiter';
-        const body = activity.summary || activity.res_name || 'Une demande de congé nécessite votre approbation';
+    if (pendingLeaves.length > 0) {
+      for (const leave of pendingLeaves) {
+        const leaveType = leave.holiday_status_id ? leave.holiday_status_id[1] : 'Congé';
+        const employeeName = leave.employee_id ? leave.employee_id[1] : 'Un employé';
+        const numberOfDays = leave.number_of_days || 'N/A';
+
+        const title = '📋 Nouvelle demande de congé à approuver';
+        const body = `${employeeName} demande un ${leaveType} (${numberOfDays} jour${numberOfDays > 1 ? 's' : ''})`;
+
         const data = {
           type: 'leave_approval_request',
           route: '/home',  // Route de navigation Flutter
           action: 'approve_leave',  // Action spécifique dans l'app
-          activityId: String(activity.id || ''),
-          leaveId: String(activity.res_id || ''),
-          leaveName: String(activity.res_name || ''),
-          userId: String(activity.user_id ? activity.user_id[0] : ''),
-          userName: String(activity.user_id ? activity.user_id[1] : ''),
-          deadline: String(activity.date_deadline || ''),
-          summary: String(activity.summary || ''),
-          note: String(activity.note || ''),
+          leaveId: String(leave.id || ''),
+          leaveName: String(leaveType),
+          employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
+          employeeName: String(employeeName),
+          dateFrom: String(leave.date_from || ''),
+          dateTo: String(leave.date_to || ''),
+          numberOfDays: String(numberOfDays),
+          notes: String(leave.notes || ''),
+          status: 'confirm',
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
         // Envoie la notification à tous les appareils enregistrés
-        // Note: En production, tu devrais filtrer pour envoyer uniquement aux managers/validateurs
+        // TODO: En production, filtrer pour envoyer uniquement aux gestionnaires/validateurs
+        // Pour l'instant, on envoie à tous les appareils
         for (const device of deviceTokens) {
           await sendNotification(device.token, title, body, data);
         }
