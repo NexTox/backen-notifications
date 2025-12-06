@@ -685,14 +685,12 @@ async function startPolling() {
         const leaveType = leave.holiday_status_id ? leave.holiday_status_id[1] : 'Absence';
         const isRefused = leave.state === 'refuse';
 
-        // Titre et corps de la notification selon le statut
+        // Titre uniquement selon le statut - les détails sont dans le dialog
         const title = isRefused
-          ? '❌ Demande de congé refusée'
-          : '🎉 Demande de congé approuvée';
+          ? '❌ Leave request refused'
+          : '✅ Leave request approved';
 
-        const body = isRefused
-          ? `Votre ${leaveType} a été refusée`
-          : `Votre ${leaveType} a été approuvée`;
+        const body = '';
 
         const data = {
           type: 'leave_validated',
@@ -700,7 +698,6 @@ async function startPolling() {
           action: 'view_calendar',  // Action spécifique dans l'app
           leaveId: String(leave.id || ''),
           employeeId: String(leave.employee_id ? leave.employee_id[0] : ''),
-          employeeName: String(leave.employee_id ? leave.employee_id[1] : ''),
           dateFrom: String(leave.date_from || ''),
           dateTo: String(leave.date_to || ''),
           leaveName: String(leaveType),
@@ -750,8 +747,8 @@ async function startPolling() {
         const employeeName = leave.employee_id ? leave.employee_id[1] : 'Un employé';
         const numberOfDays = leave.number_of_days || 'N/A';
 
-        const title = '📋 Nouvelle demande de congé à approuver';
-        const body = `${employeeName} demande un ${leaveType} (${numberOfDays} jour${numberOfDays > 1 ? 's' : ''})`;
+        const title = '📋 New leave request to approve/refuse';
+        const body = `${employeeName} is requesting ${leaveType} (${numberOfDays} day${numberOfDays > 1 ? 's' : ''})`;
 
         const data = {
           type: 'leave_approval_request',
