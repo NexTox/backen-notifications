@@ -115,6 +115,15 @@ const PORT = process.env.PORT || 3000;
 // Stockage en mémoire des tokens (remplace par une vraie DB en production)
 let deviceTokens = [];
 
+// Utilitaire: obtenir les tokens pour un userId (peut retourner plusieurs appareils)
+function getTokensForUser(userId) {
+  if (userId === null || userId === undefined || userId === '') return [];
+  const uidStr = String(userId);
+  return deviceTokens
+    .filter(d => d.userId !== undefined && String(d.userId) === uidStr)
+    .map(d => d.token);
+}
+
 // Stockage du dernier ID d'absence vérifié (pour éviter les doublons)
 let lastCheckedLeaveId = 0;
 
@@ -581,9 +590,46 @@ async function startPolling() {
         };
 
         // Envoie la notification à tous les appareils enregistrés
-        for (const device of deviceTokens) {
-          await sendNotification(device.token, title, body, data);
-        }
+        //        for (const device of deviceTokens) {
+        //          await sendNotification(device.token, title, body, data);
+        //        }
+        // Envoie la notification seulement aux appareils de l'utilisateur concerné
+        //        const employeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
+        //        const targetTokens = getTokensForUser(employeeId);
+        //        if (!employeeId || targetTokens.length === 0) {
+        //          console.log(`⏸️ Aucun token trouvé pour l'utilisateur ${employeeId} — notification ignorée`);
+        //        } else {
+        //          console.log(`📤 Envoi de la notification au(x) ${targetTokens.length} appareil(s) de l'utilisateur ${employeeId}`);
+        //          for (const token of targetTokens) {
+        //            await sendNotification(token, title, body, data);
+        //          }
+        //        }
++        // leave.employee_id peut être un hr.employee id. Il faut mapper vers res.users.user_id
++        const hrEmployeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
++        let userIdForTokens = null;
++        if (hrEmployeeId) {
++          userIdForTokens = await getUserIdForEmployee(odooUid, hrEmployeeId);
++        }
++
++        // Fallback: si aucun userId trouvé, essayer directement avec l'ID d'employee (au cas où le client enregistre ainsi)
++        let targetTokens = [];
++        if (userIdForTokens) {
++          targetTokens = getTokensForUser(userIdForTokens);
++        }
++        if (!userIdForTokens || targetTokens.length === 0) {
++          // Tentative fallback
++          targetTokens = getTokensForUser(hrEmployeeId);
++        }
++
++        if ((!userIdForTokens && !hrEmployeeId) || targetTokens.length === 0) {
++          console.log(`⏸️ Aucun token trouvé pour l'utilisateur (employeeId=${hrEmployeeId}, userId=${userIdForTokens}) — notification ignorée`);
++        } else {
++          const targetIdLog = userIdForTokens || hrEmployeeId;
++          console.log(`📤 Envoi de la notification au(x) ${targetTokens.length} appareil(s) de l'utilisateur ${targetIdLog}`);
++          for (const token of targetTokens) {
++            await sendNotification(token, title, body, data);
++          }
++        }
       }
     }
 
@@ -615,19 +661,127 @@ async function startPolling() {
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
-        // Filtrer pour envoyer uniquement aux gestionnaires/validateurs
-        const managersAndValidators = deviceTokens.filter(d =>
-          d.userRole === 'manager' || d.userRole === 'validator' || d.userRole === 'admin'
-        );
+        // Récupérer le leave_manager_id de l'employé qui fait la demande
+        const hrEmployeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
+        if (!hrEmployeeId) {
+          console.log(`⏸️ Pas d'employé associé à la demande ${leave.id}, notification ignorée`);
+          continue;
+        }
 
-        console.log(`📤 Envoi à ${managersAndValidators.length} gestionnaire(s)/validateur(s)`);
+        const leaveManagerUserId = await getLeaveManagerForEmployee(odooUid, hrEmployeeId);
 
-        for (const device of managersAndValidators) {
-          await sendNotification(device.token, title, body, data);
+        if (!leaveManagerUserId) {
+          console.log(`⚠️ Aucun leave_manager_id trouvé pour l'employé ${hrEmployeeId} - envoi à tous les managers/validateurs`);
+
+          // Fallback: envoyer à tous les gestionnaires/validateurs
+          const managersAndValidators = deviceTokens.filter(d =>
+            d.userRole === 'manager' || d.userRole === 'validator' || d.userRole === 'admin'
+          );
+
+          console.log(`📤 Envoi à ${managersAndValidators.length} gestionnaire(s)/validateur(s) (fallback)`);
+
+          for (const device of managersAndValidators) {
+            await sendNotification(device.token, title, body, data);
+          }
+        } else {
+          // Envoyer uniquement au manager responsable
+          const managerTokens = getTokensForUser(leaveManagerUserId);
+
+          if (managerTokens.length === 0) {
+            console.log(`⏸️ Aucun token trouvé pour le manager ${leaveManagerUserId} — notification ignorée`);
+          } else {
+            console.log(`📤 Envoi de la notification au manager responsable (userId: ${leaveManagerUserId}) - ${managerTokens.length} appareil(s)`);
+            for (const token of managerTokens) {
+              await sendNotification(token, title, body, data);
+            }
+          }
         }
       }
     }
   }, 30000); // 30 secondes
+}
+
+// Récupère le user_id (res.users) lié à un hr.employee (si présent)
+async function getUserIdForEmployee(uid, employeeId) {
+  try {
+    if (!employeeId) return null;
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.employee',
+          'search_read',
+          [[['id', '=', parseInt(employeeId)] ]],
+          { fields: ['id', 'user_id'] }
+        ]
+      },
+      id: 1
+    });
+
+    const rows = response.data.result || [];
+    if (rows.length > 0 && rows[0].user_id && rows[0].user_id.length > 0) {
+      return String(rows[0].user_id[0]);
+    }
+
+    return null;
+  } catch (error) {
+    console.error('❌ Erreur lors du mapping employee->user:', error.message);
+    return null;
+  }
+}
+
+// Récupère le leave_manager_id (res.users) d'un hr.employee pour savoir qui doit recevoir les notifications
+async function getLeaveManagerForEmployee(uid, employeeId) {
+  try {
+    if (!employeeId) return null;
+
+    console.log(`🔍 Recherche du leave_manager_id pour l'employé ${employeeId}...`);
+
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.employee',
+          'search_read',
+          [[['id', '=', parseInt(employeeId)] ]],
+          { fields: ['id', 'name', 'leave_manager_id'] }
+        ]
+      },
+      id: 1
+    });
+
+    const rows = response.data.result || [];
+    if (rows.length > 0) {
+      const employee = rows[0];
+      console.log(`📋 Employé trouvé: ${employee.name} (ID: ${employee.id})`);
+
+      if (employee.leave_manager_id && employee.leave_manager_id.length > 0) {
+        const managerId = String(employee.leave_manager_id[0]);
+        const managerName = employee.leave_manager_id[1];
+        console.log(`✅ Leave manager trouvé: ${managerName} (ID: ${managerId})`);
+        return managerId;
+      } else {
+        console.log(`⚠️ Aucun leave_manager_id défini pour l'employé ${employee.name}`);
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération du leave_manager_id:', error.message);
+    return null;
+  }
 }
 
 // ========================================
@@ -653,4 +807,3 @@ process.on('SIGTERM', () => {
   console.log('👋 Arrêt du serveur...');
   process.exit(0);
 });
-
