@@ -593,43 +593,32 @@ async function startPolling() {
         //        for (const device of deviceTokens) {
         //          await sendNotification(device.token, title, body, data);
         //        }
-        // Envoie la notification seulement aux appareils de l'utilisateur concerné
-        //        const employeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
-        //        const targetTokens = getTokensForUser(employeeId);
-        //        if (!employeeId || targetTokens.length === 0) {
-        //          console.log(`⏸️ Aucun token trouvé pour l'utilisateur ${employeeId} — notification ignorée`);
-        //        } else {
-        //          console.log(`📤 Envoi de la notification au(x) ${targetTokens.length} appareil(s) de l'utilisateur ${employeeId}`);
-        //          for (const token of targetTokens) {
-        //            await sendNotification(token, title, body, data);
-        //          }
-        //        }
-+        // leave.employee_id peut être un hr.employee id. Il faut mapper vers res.users.user_id
-+        const hrEmployeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
-+        let userIdForTokens = null;
-+        if (hrEmployeeId) {
-+          userIdForTokens = await getUserIdForEmployee(odooUid, hrEmployeeId);
-+        }
-+
-+        // Fallback: si aucun userId trouvé, essayer directement avec l'ID d'employee (au cas où le client enregistre ainsi)
-+        let targetTokens = [];
-+        if (userIdForTokens) {
-+          targetTokens = getTokensForUser(userIdForTokens);
-+        }
-+        if (!userIdForTokens || targetTokens.length === 0) {
-+          // Tentative fallback
-+          targetTokens = getTokensForUser(hrEmployeeId);
-+        }
-+
-+        if ((!userIdForTokens && !hrEmployeeId) || targetTokens.length === 0) {
-+          console.log(`⏸️ Aucun token trouvé pour l'utilisateur (employeeId=${hrEmployeeId}, userId=${userIdForTokens}) — notification ignorée`);
-+        } else {
-+          const targetIdLog = userIdForTokens || hrEmployeeId;
-+          console.log(`📤 Envoi de la notification au(x) ${targetTokens.length} appareil(s) de l'utilisateur ${targetIdLog}`);
-+          for (const token of targetTokens) {
-+            await sendNotification(token, title, body, data);
-+          }
-+        }
+        // leave.employee_id peut être un hr.employee id. Il faut mapper vers res.users.user_id
+        const hrEmployeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
+        let userIdForTokens = null;
+        if (hrEmployeeId) {
+          userIdForTokens = await getUserIdForEmployee(odooUid, hrEmployeeId);
+        }
+
+        // Fallback: si aucun userId trouvé, essayer directement avec l'ID d'employee (au cas où le client enregistre ainsi)
+        let targetTokens = [];
+        if (userIdForTokens) {
+          targetTokens = getTokensForUser(userIdForTokens);
+        }
+        if (!userIdForTokens || targetTokens.length === 0) {
+          // Tentative fallback
+          targetTokens = getTokensForUser(hrEmployeeId);
+        }
+
+        if ((!userIdForTokens && !hrEmployeeId) || targetTokens.length === 0) {
+          console.log(`⏸️ Aucun token trouvé pour l'utilisateur (employeeId=${hrEmployeeId}, userId=${userIdForTokens}) — notification ignorée`);
+        } else {
+          const targetIdLog = userIdForTokens || hrEmployeeId;
+          console.log(`📤 Envoi de la notification au(x) ${targetTokens.length} appareil(s) de l'utilisateur ${targetIdLog}`);
+          for (const token of targetTokens) {
+            await sendNotification(token, title, body, data);
+          }
+        }
       }
     }
 
