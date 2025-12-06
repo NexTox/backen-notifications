@@ -124,11 +124,13 @@ function getTokensForUser(userId) {
     .map(d => d.token);
 }
 
-// Stockage du dernier ID d'absence vérifié (pour éviter les doublons)
-let lastCheckedLeaveId = 0;
+// Stockage de la dernière date de vérification (pour éviter les doublons)
+let lastCheckedLeaveDate = null;
+let lastCheckedActivityDate = null;
 
-// Stockage du dernier ID d'activité vérifié (pour éviter les doublons)
-let lastCheckedActivityId = 0;
+// Stockage des IDs déjà traités pour éviter les doublons dans la même minute
+let processedLeaveIds = new Set();
+let processedActivityIds = new Set();
 
 // ========================================
 // ENDPOINTS
@@ -384,6 +386,14 @@ async function getUserRoleFromOdoo(uid, userId) {
 // Récupère les absences validées ET refusées depuis Odoo
 async function checkOdooLeaves(uid) {
   try {
+    // Construire le filtre de date
+    let domainFilter = [['state', 'in', ['validate', 'refuse']]];
+
+    // Si on a une dernière date de vérification, ne récupérer que les modifications récentes
+    if (lastCheckedLeaveDate) {
+      domainFilter.push(['write_date', '>', lastCheckedLeaveDate]);
+    }
+
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -396,11 +406,11 @@ async function checkOdooLeaves(uid) {
           ODOO_CONFIG.password,
           'hr.leave',
           'search_read',
-          [[['state', 'in', ['validate', 'refuse']], ['id', '>', lastCheckedLeaveId]]],
+          [domainFilter],
           {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state'],
-            limit: 10,
-            order: 'id DESC'
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state', 'write_date'],
+            limit: 20,
+            order: 'write_date DESC'
           }
         ]
       },
@@ -409,18 +419,31 @@ async function checkOdooLeaves(uid) {
 
     const leaves = response.data.result || [];
 
-    if (leaves.length > 0) {
-      // Met à jour le dernier ID vérifié
-      lastCheckedLeaveId = Math.max(...leaves.map(l => l.id));
-      console.log(`📬 ${leaves.length} nouvelle(s) absence(s) détectée(s)`);
+    // Filtrer les demandes déjà traitées
+    const newLeaves = leaves.filter(leave => !processedLeaveIds.has(leave.id));
+
+    if (newLeaves.length > 0) {
+      // Mettre à jour la dernière date de vérification
+      const latestWriteDate = newLeaves[0].write_date;
+      lastCheckedLeaveDate = latestWriteDate;
+
+      console.log(`📬 ${newLeaves.length} absence(s) modifiée(s) détectée(s)`);
 
       // Debug: afficher les données récupérées
-      leaves.forEach(leave => {
-        console.log(`   - ID: ${leave.id}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, État: ${leave.state}`);
+      newLeaves.forEach(leave => {
+        console.log(`   - ID: ${leave.id}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, État: ${leave.state}, Modifié: ${leave.write_date}`);
+        // Ajouter à la liste des IDs traités
+        processedLeaveIds.add(leave.id);
       });
+
+      // Nettoyer les vieux IDs traités (garder seulement les 100 derniers)
+      if (processedLeaveIds.size > 100) {
+        const idsArray = Array.from(processedLeaveIds);
+        processedLeaveIds = new Set(idsArray.slice(-100));
+      }
     }
 
-    return leaves;
+    return newLeaves;
   } catch (error) {
     console.error('❌ Erreur lors de la récupération des absences:', error.message);
     return [];
@@ -430,7 +453,14 @@ async function checkOdooLeaves(uid) {
 // Récupère les nouvelles demandes de congé en attente d'approbation depuis Odoo
 async function checkOdooActivities(uid) {
   try {
-    // Méthode alternative: récupérer directement les demandes de congé en attente
+    // Construire le filtre de date
+    let domainFilter = [['state', '=', 'confirm']];  // État "À approuver"
+
+    // Si on a une dernière date de vérification, ne récupérer que les modifications récentes
+    if (lastCheckedActivityDate) {
+      domainFilter.push(['write_date', '>', lastCheckedActivityDate]);
+    }
+
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -443,14 +473,11 @@ async function checkOdooActivities(uid) {
           ODOO_CONFIG.password,
           'hr.leave',
           'search_read',
-          [[
-            ['state', '=', 'confirm'],  // État "À approuver"
-            ['id', '>', lastCheckedActivityId]
-          ]],
+          [domainFilter],
           {
-            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state', 'number_of_days', 'notes'],
-            limit: 10,
-            order: 'id DESC'
+            fields: ['id', 'name', 'employee_id', 'date_from', 'date_to', 'holiday_status_id', 'state', 'number_of_days', 'notes', 'write_date'],
+            limit: 20,
+            order: 'write_date DESC'
           }
         ]
       },
@@ -459,18 +486,31 @@ async function checkOdooActivities(uid) {
 
     const pendingLeaves = response.data.result || [];
 
-    if (pendingLeaves.length > 0) {
-      // Met à jour le dernier ID vérifié
-      lastCheckedActivityId = Math.max(...pendingLeaves.map(l => l.id));
-      console.log(`📋 ${pendingLeaves.length} nouvelle(s) demande(s) de congé à approuver détectée(s)`);
+    // Filtrer les demandes déjà traitées
+    const newPendingLeaves = pendingLeaves.filter(leave => !processedActivityIds.has(leave.id));
+
+    if (newPendingLeaves.length > 0) {
+      // Mettre à jour la dernière date de vérification
+      const latestWriteDate = newPendingLeaves[0].write_date;
+      lastCheckedActivityDate = latestWriteDate;
+
+      console.log(`📋 ${newPendingLeaves.length} demande(s) de congé à approuver détectée(s)`);
 
       // Debug: afficher les données récupérées
-      pendingLeaves.forEach(leave => {
-        console.log(`   - ID: ${leave.id}, Employé: ${leave.employee_id ? leave.employee_id[1] : 'N/A'}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}`);
+      newPendingLeaves.forEach(leave => {
+        console.log(`   - ID: ${leave.id}, Employé: ${leave.employee_id ? leave.employee_id[1] : 'N/A'}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, Modifié: ${leave.write_date}`);
+        // Ajouter à la liste des IDs traités
+        processedActivityIds.add(leave.id);
       });
+
+      // Nettoyer les vieux IDs traités (garder seulement les 100 derniers)
+      if (processedActivityIds.size > 100) {
+        const idsArray = Array.from(processedActivityIds);
+        processedActivityIds = new Set(idsArray.slice(-100));
+      }
     }
 
-    return pendingLeaves;
+    return newPendingLeaves;
   } catch (error) {
     console.error('❌ Erreur lors de la récupération des demandes à approuver:', error.message);
     return [];
@@ -534,6 +574,81 @@ async function sendNotification(token, title, body, data = {}) {
 let isPolling = false;
 let odooUid = null;
 
+// Initialise les derniers IDs vérifiés au démarrage
+async function initializeLastCheckedIds(uid) {
+  try {
+    console.log('🔧 Initialisation des dernières dates de vérification...');
+
+    // Récupérer la dernière absence validée/refusée (par date de modification)
+    const leavesResponse = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.leave',
+          'search_read',
+          [[['state', 'in', ['validate', 'refuse']]]],
+          {
+            fields: ['id', 'write_date'],
+            limit: 1,
+            order: 'write_date DESC'
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const lastLeave = leavesResponse.data.result || [];
+    if (lastLeave.length > 0) {
+      lastCheckedLeaveDate = lastLeave[0].write_date;
+      console.log(`✅ Dernière date d'absence vérifiée initialisée: ${lastCheckedLeaveDate}`);
+    } else {
+      console.log(`ℹ️ Aucune absence validée/refusée trouvée, lastCheckedLeaveDate reste à null`);
+    }
+
+    // Récupérer la dernière demande en attente (par date de modification)
+    const activitiesResponse = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.leave',
+          'search_read',
+          [[['state', '=', 'confirm']]],
+          {
+            fields: ['id', 'write_date'],
+            limit: 1,
+            order: 'write_date DESC'
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const lastActivity = activitiesResponse.data.result || [];
+    if (lastActivity.length > 0) {
+      lastCheckedActivityDate = lastActivity[0].write_date;
+      console.log(`✅ Dernière date d'activité vérifiée initialisée: ${lastCheckedActivityDate}`);
+    } else {
+      console.log(`ℹ️ Aucune demande en attente trouvée, lastCheckedActivityDate reste à null`);
+    }
+
+  } catch (error) {
+    console.error('❌ Erreur lors de l\'initialisation des dernières dates:', error.message);
+    console.log('⚠️ Les dates restent à null, toutes les demandes existantes seront potentiellement re-notifiées');
+  }
+}
+
 async function startPolling() {
   if (isPolling) return;
 
@@ -546,6 +661,10 @@ async function startPolling() {
     console.error('❌ Impossible de démarrer le polling sans authentification');
     return;
   }
+
+  // Initialiser les derniers IDs vérifiés avec les demandes existantes
+  // Cela évite de re-notifier pour des demandes déjà traitées
+  await initializeLastCheckedIds(odooUid);
 
   isPolling = true;
 
