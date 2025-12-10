@@ -496,12 +496,69 @@ async function checkOdooActivities(uid) {
 
       console.log(`📋 ${newPendingLeaves.length} demande(s) de congé à approuver détectée(s)`);
 
-      // Debug: afficher les données récupérées
-      newPendingLeaves.forEach(leave => {
+      // Pour chaque demande en attente, déterminer le type de validation et notifier les bons utilisateurs
+      for (const leave of newPendingLeaves) {
         console.log(`   - ID: ${leave.id}, Employé: ${leave.employee_id ? leave.employee_id[1] : 'N/A'}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, Modifié: ${leave.write_date}`);
-        // Ajouter à la liste des IDs traités
+
+        // Marquer comme traité pour éviter double envoi
         processedActivityIds.add(leave.id);
-      });
+
+        // Récupérer les informations du type de congé (hr.leave.type)
+        let leaveType = null;
+        try {
+          if (leave.holiday_status_id && leave.holiday_status_id.length > 0) {
+            const leaveTypeId = leave.holiday_status_id[0];
+            leaveType = await getLeaveType(uid, leaveTypeId);
+          }
+        } catch (err) {
+          console.error('❌ Erreur lors de la récupération du type de congé:', err.message);
+        }
+
+        // Règles de notification demandées:
+        // - user 11: reçoit la notif pour les demandes 'To Approve' si le type est "By Employee's Approver" ou "By Employee's Approver and Time Off Officer" (double validation -> première validation)
+        // - users 6 & 12: reçoivent une notif lorsqu'une demande est à l'état Second approval, et reçoivent aussi les demandes où le type est "By Time Off Officer"
+
+        const userFirstApproverId = 11;
+        const timeOffOfficerIds = [6, 12];
+
+        // Fonction utilitaire de détection (tolérante aux labels/valeurs inattendues)
+        const vt = (leaveType && leaveType.leave_validation_type) ? String(leaveType.leave_validation_type).toLowerCase() : '';
+        const vname = (leaveType && leaveType.name) ? String(leaveType.name).toLowerCase() : '';
+
+        const isEmployeeApprover = vt.includes('employee') || vname.includes("employee") || vname.includes("approver");
+        const isTimeOffOfficer = vt.includes('time') || vname.includes('time off') || vname.includes('officer');
+        const isBoth = (isEmployeeApprover && isTimeOffOfficer) || vt.includes('and') || vname.includes('and');
+
+        // Si c'est une double validation, au stade "To Approve" on notifie le premier validateur (user 11)
+        // Si le type est uniquement "By Employee's Approver" -> notify user 11
+        if (isBoth || isEmployeeApprover) {
+          // Envoyer à user 11
+          try {
+            const tokens = getTokensForUser(userFirstApproverId);
+            const title = `Demande à approuver (#${leave.id})`;
+            const body = `Nouvelle demande de ${leave.employee_id ? leave.employee_id[1] : 'un employé'} à valider.`;
+            tokens.forEach(t => sendNotification(t, title, body, { leaveId: String(leave.id) }));
+            console.log(`🔔 Notification envoyée au user ${userFirstApproverId} pour la demande ${leave.id}`);
+          } catch (err) {
+            console.error("❌ Erreur lors de l'envoi à user 11:", err.message);
+          }
+        }
+
+        // Si le type est "By Time Off Officer" -> notifier les time off officers directement
+        if (isTimeOffOfficer) {
+          try {
+            const title = `Demande à approuver (#${leave.id})`;
+            const body = `Nouvelle demande en attente pour les responsables des congés.`;
+            for (const uidOfficer of timeOffOfficerIds) {
+              const tokens = getTokensForUser(uidOfficer);
+              tokens.forEach(t => sendNotification(t, title, body, { leaveId: String(leave.id) }));
+            }
+            console.log(`🔔 Notification envoyée aux time off officers pour la demande ${leave.id}`);
+          } catch (err) {
+            console.error("❌ Erreur lors de l'envoi aux time off officers:", err.message);
+          }
+        }
+      }
 
       // Nettoyer les vieux IDs traités (garder seulement les 100 derniers)
       if (processedActivityIds.size > 100) {
@@ -885,6 +942,38 @@ async function getLeaveManagerForEmployee(uid, employeeId) {
     return null;
   } catch (error) {
     console.error('❌ Erreur lors de la récupération du leave_manager_id:', error.message);
+    return null;
+  }
+}
+
+// Récupère les informations d'un type de congé (hr.leave.type)
+async function getLeaveType(uid, leaveTypeId) {
+  try {
+    if (!leaveTypeId) return null;
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.leave.type',
+          'search_read',
+          [[['id', '=', parseInt(leaveTypeId)]]],
+          { fields: ['id', 'name', 'leave_validation_type'] }
+        ]
+      },
+      id: 1
+    });
+
+    const rows = response.data.result || [];
+    if (rows.length > 0) return rows[0];
+    return null;
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération du hr.leave.type:', error.message);
     return null;
   }
 }
