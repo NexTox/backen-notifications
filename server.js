@@ -127,10 +127,12 @@ function getTokensForUser(userId) {
 // Stockage de la dernière date de vérification (pour éviter les doublons)
 let lastCheckedLeaveDate = null;
 let lastCheckedActivityDate = null;
+let lastCheckedSecondApprovalDate = null;
 
 // Stockage des IDs déjà traités pour éviter les doublons dans la même minute
 let processedLeaveIds = new Set();
 let processedActivityIds = new Set();
+let processedSecondApprovalIds = new Set();
 
 // ========================================
 // ENDPOINTS
@@ -516,6 +518,68 @@ async function checkOdooActivities(uid) {
   }
 }
 
+// Récupère les demandes passées en "Second approval" (état configurable)
+async function checkOdooSecondApprovals(uid) {
+  try {
+    const SECOND_STATE = process.env.SECOND_APPROVAL_STATE || 'second_approval';
+
+    let domainFilter = [['state', '=', SECOND_STATE]];
+
+    if (lastCheckedSecondApprovalDate) {
+      domainFilter.push(['write_date', '>', lastCheckedSecondApprovalDate]);
+    }
+
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.leave',
+          'search_read',
+          [domainFilter],
+          {
+            fields: ['id', 'name', 'employee_id', 'holiday_status_id', 'state', 'write_date', 'notes'],
+            limit: 20,
+            order: 'write_date DESC'
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const rows = response.data.result || [];
+
+    // Filtrer les demandes déjà traitées
+    const newRows = rows.filter(r => !processedSecondApprovalIds.has(r.id));
+
+    if (newRows.length > 0) {
+      lastCheckedSecondApprovalDate = newRows[0].write_date;
+      console.log(`🔔 ${newRows.length} demande(s) en Second approval détectée(s)`);
+
+      newRows.forEach(r => {
+        console.log(`   - ID: ${r.id}, Employé: ${r.employee_id ? r.employee_id[1] : 'N/A'}, Type: ${r.holiday_status_id ? r.holiday_status_id[1] : 'N/A'}, Modifié: ${r.write_date}`);
+        processedSecondApprovalIds.add(r.id);
+      });
+
+      // Nettoyer anciens
+      if (processedSecondApprovalIds.size > 100) {
+        const idsArray = Array.from(processedSecondApprovalIds);
+        processedSecondApprovalIds = new Set(idsArray.slice(-100));
+      }
+    }
+
+    return newRows;
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération des second approvals:', error.message);
+    return [];
+  }
+}
+
 // ========================================
 // FONCTION D'ENVOI DE NOTIFICATION
 // ========================================
@@ -836,6 +900,26 @@ async function startPolling() {
             for (const token of managerTokens) {
               await sendNotification(token, title, body, data);
             }
+          }
+        }
+      }
+    }
+
+    // Vérification des demandes passées en Second approval
+    const secondApprovals = await checkOdooSecondApprovals(odooUid);
+    if (secondApprovals.length > 0) {
+      // Envoyer aux time off officers (IDs configurés ici)
+      const timeOffOfficerIds = [6, 12];
+      for (const leave of secondApprovals) {
+        const title2 = `🔔 Leave request moved to Second approval (#${leave.id})`;
+        const body2 = `${leave.employee_id ? leave.employee_id[1] : 'An employee'} - ${leave.holiday_status_id ? leave.holiday_status_id[1] : ''}`;
+        // récupérer le type et vérifier si c'est vraiment a notifier
+        for (const uidOfficer of timeOffOfficerIds) {
+          const tokens = getTokensForUser(uidOfficer);
+          if (tokens.length === 0) continue;
+          console.log(`📤 Envoi de la notification de Second approval à user ${uidOfficer} - ${tokens.length} appareil(s)`);
+          for (const token of tokens) {
+            await sendNotification(token, title2, body2, { leaveId: String(leave.id), status: 'second_approval' });
           }
         }
       }
