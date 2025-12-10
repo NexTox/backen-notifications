@@ -529,6 +529,7 @@ async function checkOdooSecondApprovals(uid) {
       domainFilter.push(['write_date', '>', lastCheckedSecondApprovalDate]);
     }
 
+    console.log(`🔍 checkOdooSecondApprovals: querying state='${SECOND_STATE}' with lastCheckedSecondApprovalDate=${lastCheckedSecondApprovalDate}`);
     const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
       jsonrpc: '2.0',
       method: 'call',
@@ -553,6 +554,7 @@ async function checkOdooSecondApprovals(uid) {
     });
 
     const rows = response.data.result || [];
+    console.log(`🔎 checkOdooSecondApprovals: fetched ${rows.length} rows`);
 
     // Filtrer les demandes déjà traitées
     const newRows = rows.filter(r => !processedSecondApprovalIds.has(r.id));
@@ -562,7 +564,7 @@ async function checkOdooSecondApprovals(uid) {
       console.log(`🔔 ${newRows.length} demande(s) en Second approval détectée(s)`);
 
       newRows.forEach(r => {
-        console.log(`   - ID: ${r.id}, Employé: ${r.employee_id ? r.employee_id[1] : 'N/A'}, Type: ${r.holiday_status_id ? r.holiday_status_id[1] : 'N/A'}, Modifié: ${r.write_date}`);
+        console.log(`   - ID: ${r.id}, state=${r.state}, write_date=${r.write_date}, employee=${r.employee_id ? r.employee_id[1] : 'N/A'}, type=${r.holiday_status_id ? r.holiday_status_id[1] : 'N/A'}`);
         processedSecondApprovalIds.add(r.id);
       });
 
@@ -704,6 +706,39 @@ async function initializeLastCheckedIds(uid) {
       console.log(`✅ Dernière date d'activité vérifiée initialisée: ${lastCheckedActivityDate}`);
     } else {
       console.log(`ℹ️ Aucune demande en attente trouvée, lastCheckedActivityDate reste à null`);
+    }
+
+    // Récupérer la dernière demande passée en second approval (si cet état existe)
+    try {
+      const SECOND_STATE = process.env.SECOND_APPROVAL_STATE || 'second_approval';
+      const secondResp = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          service: 'object',
+          method: 'execute_kw',
+          args: [
+            ODOO_CONFIG.db,
+            uid,
+            ODOO_CONFIG.password,
+            'hr.leave',
+            'search_read',
+            [[['state', '=', SECOND_STATE]]],
+            { fields: ['id', 'write_date'], limit: 1, order: 'write_date DESC' }
+          ]
+        },
+        id: 1
+      });
+
+      const lastSecond = secondResp.data.result || [];
+      if (lastSecond.length > 0) {
+        lastCheckedSecondApprovalDate = lastSecond[0].write_date;
+        console.log(`✅ Dernière date de second_approval vérifiée initialisée: ${lastCheckedSecondApprovalDate}`);
+      } else {
+        console.log(`ℹ️ Aucune demande en second_approval trouvée, lastCheckedSecondApprovalDate reste à null`);
+      }
+    } catch (err) {
+      console.log(`⚠️ Impossible d'initialiser lastCheckedSecondApprovalDate: ${err.message}`);
     }
 
   } catch (error) {
