@@ -519,7 +519,7 @@ async function checkOdooActivities(uid) {
         // - users 6 & 12: reçoivent une notif lorsqu'une demande est à l'état Second approval, et reçoivent aussi les demandes où le type est "By Time Off Officer"
 
         const userFirstApproverId = 11;
-        const timeOffOfficerIds = [6, 12];
+        const timeOffOfficerIds = [5, 10];
 
         // Fonction utilitaire de détection (tolérante aux labels/valeurs inattendues)
         const vt = (leaveType && leaveType.leave_validation_type) ? String(leaveType.leave_validation_type).toLowerCase() : '';
