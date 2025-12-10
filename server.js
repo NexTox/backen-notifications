@@ -848,9 +848,16 @@ async function startPolling() {
 
         const vt = (leaveTypeInfo && leaveTypeInfo.leave_validation_type) ? String(leaveTypeInfo.leave_validation_type).toLowerCase() : '';
         const vname = (leaveTypeInfo && leaveTypeInfo.name) ? String(leaveTypeInfo.name).toLowerCase() : '';
-        const isEmployeeApprover = vt.includes('employee') || vname.includes('employee') || vname.includes('approver');
-        const isTimeOffOfficer = vt.includes('time') || vname.includes('time off') || vname.includes('officer');
-        const isBoth = (isEmployeeApprover && isTimeOffOfficer) || vt.includes('and') || vname.includes('and');
+
+        const containsAny = (str, tokens) => tokens.some(t => str.includes(t));
+
+        const employeeTokens = ['employee', "employee's", 'employe', 'approver', 'approbateur'];
+        const timeTokens = ['time off', 'time_off', 'timeoff', 'time', 'officer', 'responsable', 'responsable des congés', 'responsable des conges', 'responsable congé'];
+        const bothTokens = ['and', '&', 'et', 'both', 'double'];
+
+        const isEmployeeApprover = containsAny(vt, employeeTokens) || containsAny(vname, employeeTokens);
+        const isTimeOffOfficer = containsAny(vt, timeTokens) || containsAny(vname, timeTokens);
+        const isBoth = containsAny(vt, bothTokens) || containsAny(vname, bothTokens) || (isEmployeeApprover && isTimeOffOfficer);
 
         const timeOffOfficerIds = [6, 12];
 
