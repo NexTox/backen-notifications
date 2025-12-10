@@ -496,69 +496,11 @@ async function checkOdooActivities(uid) {
 
       console.log(`📋 ${newPendingLeaves.length} demande(s) de congé à approuver détectée(s)`);
 
-      // Pour chaque demande en attente, déterminer le type de validation et notifier les bons utilisateurs
-      for (const leave of newPendingLeaves) {
+      // Marquer comme traité et loger; la logique d'envoi est gérée dans le polling principal
+      newPendingLeaves.forEach(leave => {
         console.log(`   - ID: ${leave.id}, Employé: ${leave.employee_id ? leave.employee_id[1] : 'N/A'}, Type: ${leave.holiday_status_id ? leave.holiday_status_id[1] : 'N/A'}, Modifié: ${leave.write_date}`);
-
-        // Marquer comme traité pour éviter double envoi
         processedActivityIds.add(leave.id);
-
-        // Récupérer les informations du type de congé (hr.leave.type)
-        let leaveType = null;
-        try {
-          if (leave.holiday_status_id && leave.holiday_status_id.length > 0) {
-            const leaveTypeId = leave.holiday_status_id[0];
-            leaveType = await getLeaveType(uid, leaveTypeId);
-          }
-        } catch (err) {
-          console.error('❌ Erreur lors de la récupération du type de congé:', err.message);
-        }
-
-        // Règles de notification demandées:
-        // - user 11: reçoit la notif pour les demandes 'To Approve' si le type est "By Employee's Approver" ou "By Employee's Approver and Time Off Officer" (double validation -> première validation)
-        // - users 6 & 12: reçoivent une notif lorsqu'une demande est à l'état Second approval, et reçoivent aussi les demandes où le type est "By Time Off Officer"
-
-        const userFirstApproverId = 11;
-        const timeOffOfficerIds = [5, 10];
-
-        // Fonction utilitaire de détection (tolérante aux labels/valeurs inattendues)
-        const vt = (leaveType && leaveType.leave_validation_type) ? String(leaveType.leave_validation_type).toLowerCase() : '';
-        const vname = (leaveType && leaveType.name) ? String(leaveType.name).toLowerCase() : '';
-
-        const isEmployeeApprover = vt.includes('employee') || vname.includes("employee") || vname.includes("approver");
-        const isTimeOffOfficer = vt.includes('time') || vname.includes('time off') || vname.includes('officer');
-        const isBoth = (isEmployeeApprover && isTimeOffOfficer) || vt.includes('and') || vname.includes('and');
-
-        // Si c'est une double validation, au stade "To Approve" on notifie le premier validateur (user 11)
-        // Si le type est uniquement "By Employee's Approver" -> notify user 11
-        if (isBoth || isEmployeeApprover) {
-          // Envoyer à user 11
-          try {
-            const tokens = getTokensForUser(userFirstApproverId);
-            const title = `Demande à approuver (#${leave.id})`;
-            const body = `Nouvelle demande de ${leave.employee_id ? leave.employee_id[1] : 'un employé'} à valider.`;
-            tokens.forEach(t => sendNotification(t, title, body, { leaveId: String(leave.id) }));
-            console.log(`🔔 Notification envoyée au user ${userFirstApproverId} pour la demande ${leave.id}`);
-          } catch (err) {
-            console.error("❌ Erreur lors de l'envoi à user 11:", err.message);
-          }
-        }
-
-        // Si le type est "By Time Off Officer" -> notifier les time off officers directement
-        if (isTimeOffOfficer) {
-          try {
-            const title = `Demande à approuver (#${leave.id})`;
-            const body = `Nouvelle demande en attente pour les responsables des congés.`;
-            for (const uidOfficer of timeOffOfficerIds) {
-              const tokens = getTokensForUser(uidOfficer);
-              tokens.forEach(t => sendNotification(t, title, body, { leaveId: String(leave.id) }));
-            }
-            console.log(`🔔 Notification envoyée aux time off officers pour la demande ${leave.id}`);
-          } catch (err) {
-            console.error("❌ Erreur lors de l'envoi aux time off officers:", err.message);
-          }
-        }
-      }
+      });
 
       // Nettoyer les vieux IDs traités (garder seulement les 100 derniers)
       if (processedActivityIds.size > 100) {
@@ -823,13 +765,51 @@ async function startPolling() {
           clickAction: 'FLUTTER_NOTIFICATION_CLICK'  // Pour Android
         };
 
-        // Récupérer le leave_manager_id de l'employé qui fait la demande
+        // Récupérer l'ID hr.employee et vérifier
         const hrEmployeeId = leave.employee_id ? String(leave.employee_id[0]) : '';
         if (!hrEmployeeId) {
           console.log(`⏸️ Pas d'employé associé à la demande ${leave.id}, notification ignorée`);
           continue;
         }
 
+        // Récupérer le type de congé pour décider du routage
+        let leaveTypeInfo = null;
+        try {
+          if (leave.holiday_status_id && leave.holiday_status_id.length > 0) {
+            leaveTypeInfo = await getLeaveType(odooUid, leave.holiday_status_id[0]);
+          }
+        } catch (err) {
+          console.error('❌ Erreur lors de la récupération du type de congé:', err.message);
+        }
+
+        const vt = (leaveTypeInfo && leaveTypeInfo.leave_validation_type) ? String(leaveTypeInfo.leave_validation_type).toLowerCase() : '';
+        const vname = (leaveTypeInfo && leaveTypeInfo.name) ? String(leaveTypeInfo.name).toLowerCase() : '';
+        const isEmployeeApprover = vt.includes('employee') || vname.includes('employee') || vname.includes('approver');
+        const isTimeOffOfficer = vt.includes('time') || vname.includes('time off') || vname.includes('officer');
+        const isBoth = (isEmployeeApprover && isTimeOffOfficer) || vt.includes('and') || vname.includes('and');
+
+        const timeOffOfficerIds = [6, 12];
+
+        // Si le type indique que ce sont les time off officers qui doivent traiter (et pas la double validation), on envoie directement à eux
+        if (isTimeOffOfficer && !isBoth) {
+          try {
+            const titleTO = title;
+            const bodyTO = `Nouvelle demande en attente pour les responsables des congés.`;
+            for (const uidOfficer of timeOffOfficerIds) {
+              const tokens = getTokensForUser(uidOfficer);
+              if (tokens.length === 0) continue;
+              console.log(`📤 Envoi de la notification aux time off officers (userId: ${uidOfficer}) - ${tokens.length} appareil(s)`);
+              for (const token of tokens) {
+                await sendNotification(token, titleTO, bodyTO, data);
+              }
+            }
+          } catch (err) {
+            console.error('❌ Erreur lors de l\'envoi aux time off officers:', err.message);
+          }
+          continue; // Ne pas envoyer aussi au leave_manager
+        }
+
+        // Sinon (employee approver ou double validation) on notifie le leave_manager (première validation)
         const leaveManagerUserId = await getLeaveManagerForEmployee(odooUid, hrEmployeeId);
 
         if (!leaveManagerUserId) {
