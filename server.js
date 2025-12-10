@@ -128,11 +128,13 @@ function getTokensForUser(userId) {
 let lastCheckedLeaveDate = null;
 let lastCheckedActivityDate = null;
 let lastCheckedSecondApprovalDate = null;
+let lastCheckedAllocationDate = null;
 
 // Stockage des IDs déjà traités pour éviter les doublons dans la même minute
 let processedLeaveIds = new Set();
 let processedActivityIds = new Set();
 let processedSecondApprovalIds = new Set();
+let processedAllocationIds = new Set();
 
 // ========================================
 // ENDPOINTS
@@ -582,6 +584,63 @@ async function checkOdooSecondApprovals(uid) {
   }
 }
 
+// Récupère les nouvelles allocations (hr.leave.allocation) en état 'confirm'
+async function checkOdooAllocations(uid) {
+  try {
+    let domainFilter = [['state', '=', 'confirm']];
+    if (lastCheckedAllocationDate) {
+      domainFilter.push(['write_date', '>', lastCheckedAllocationDate]);
+    }
+
+    console.log(`🔍 checkOdooAllocations: querying hr.leave.allocation with lastCheckedAllocationDate=${lastCheckedAllocationDate}`);
+    const response = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+      jsonrpc: '2.0',
+      method: 'call',
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [
+          ODOO_CONFIG.db,
+          uid,
+          ODOO_CONFIG.password,
+          'hr.leave.allocation',
+          'search_read',
+          [domainFilter],
+          {
+            fields: ['id', 'name', 'employee_id', 'number_of_days', 'state', 'write_date'],
+            limit: 20,
+            order: 'write_date DESC'
+          }
+        ]
+      },
+      id: 1
+    });
+
+    const rows = response.data.result || [];
+    console.log(`🔎 checkOdooAllocations: fetched ${rows.length} rows`);
+
+    const newRows = rows.filter(r => !processedAllocationIds.has(r.id));
+    if (newRows.length > 0) {
+      lastCheckedAllocationDate = newRows[0].write_date;
+      console.log(`🔔 ${newRows.length} allocation(s) détectée(s)`);
+      newRows.forEach(r => {
+        console.log(`   - ID: ${r.id}, employee=${r.employee_id ? r.employee_id[1] : 'N/A'}, days=${r.number_of_days || 'N/A'}, write_date=${r.write_date}`);
+        processedAllocationIds.add(r.id);
+      });
+
+      if (processedAllocationIds.size > 100) {
+        const idsArray = Array.from(processedAllocationIds);
+        processedAllocationIds = new Set(idsArray.slice(-100));
+      }
+    }
+
+    return newRows;
+  } catch (error) {
+    console.error('❌ Erreur lors de la récupération des allocations:', error.message);
+    return [];
+  }
+}
+
 // ========================================
 // FONCTION D'ENVOI DE NOTIFICATION
 // ========================================
@@ -706,6 +765,38 @@ async function initializeLastCheckedIds(uid) {
       console.log(`✅ Dernière date d'activité vérifiée initialisée: ${lastCheckedActivityDate}`);
     } else {
       console.log(`ℹ️ Aucune demande en attente trouvée, lastCheckedActivityDate reste à null`);
+    }
+
+    // Récupérer la dernière allocation (requests for allocation) si le modèle existe
+    try {
+      const allocResp = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
+        jsonrpc: '2.0',
+        method: 'call',
+        params: {
+          service: 'object',
+          method: 'execute_kw',
+          args: [
+            ODOO_CONFIG.db,
+            uid,
+            ODOO_CONFIG.password,
+            'hr.leave.allocation',
+            'search_read',
+            [[['state', '=', 'confirm']]],
+            { fields: ['id', 'write_date'], limit: 1, order: 'write_date DESC' }
+          ]
+        },
+        id: 1
+      });
+
+      const lastAlloc = allocResp.data.result || [];
+      if (lastAlloc.length > 0) {
+        lastCheckedAllocationDate = lastAlloc[0].write_date;
+        console.log(`✅ Dernière date d'allocation vérifiée initialisée: ${lastCheckedAllocationDate}`);
+      } else {
+        console.log(`ℹ️ Aucune allocation trouvée, lastCheckedAllocationDate reste à null`);
+      }
+    } catch (err) {
+      console.log(`⚠️ Impossible d'initialiser lastCheckedAllocationDate (model peut ne pas exister): ${err.message}`);
     }
 
     // Récupérer la dernière demande passée en second approval (si cet état existe)
@@ -962,6 +1053,24 @@ async function startPolling() {
           console.log(`📤 Envoi de la notification de Second approval à user ${uidOfficer} - ${tokens.length} appareil(s)`);
           for (const token of tokens) {
             await sendNotification(token, title2, body2, { leaveId: String(leave.id), status: 'second_approval' });
+          }
+        }
+      }
+    }
+
+    // Vérification des nouvelles allocations (requests for allocation)
+    const allocations = await checkOdooAllocations(odooUid);
+    if (allocations.length > 0) {
+      const timeOffOfficerIds = [6, 12];
+      for (const alloc of allocations) {
+        const titleAlloc = `📦 New allocation request (#${alloc.id})`;
+        const bodyAlloc = `${alloc.employee_id ? alloc.employee_id[1] : 'An employee'} - ${alloc.number_of_days || ''} day(s)`;
+        for (const uidOfficer of timeOffOfficerIds) {
+          const tokens = getTokensForUser(uidOfficer);
+          if (tokens.length === 0) continue;
+          console.log(`📤 Envoi de la notification d'allocation à user ${uidOfficer} - ${tokens.length} appareil(s)`);
+          for (const token of tokens) {
+            await sendNotification(token, titleAlloc, bodyAlloc, { allocationId: String(alloc.id), action: 'view_allocation' });
           }
         }
       }
