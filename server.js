@@ -521,7 +521,7 @@ async function checkOdooActivities(uid) {
 // Récupère les demandes passées en "Second approval" (état configurable)
 async function checkOdooSecondApprovals(uid) {
   try {
-    const SECOND_STATE = process.env.SECOND_APPROVAL_STATE || 'second_approval';
+    const SECOND_STATE = process.env.SECOND_APPROVAL_STATE || 'validate1';
 
     let domainFilter = [['state', '=', SECOND_STATE]];
 
@@ -710,7 +710,7 @@ async function initializeLastCheckedIds(uid) {
 
     // Récupérer la dernière demande passée en second approval (si cet état existe)
     try {
-      const SECOND_STATE = process.env.SECOND_APPROVAL_STATE || 'second_approval';
+      const SECOND_STATE = process.env.SECOND_APPROVAL_STATE || 'validate1';
       const secondResp = await axios.post(`${ODOO_CONFIG.url}/jsonrpc`, {
         jsonrpc: '2.0',
         method: 'call',
