@@ -1044,7 +1044,7 @@ async function startPolling() {
       // Envoyer aux time off officers (IDs configurés ici)
       const timeOffOfficerIds = [6, 12];
       for (const leave of secondApprovals) {
-        const title2 = `🔔 Leave request moved to Second approval (#${leave.id})`;
+        const title2 = `🔔 New request waiting for approval`;
         const body2 = `${leave.employee_id ? leave.employee_id[1] : 'An employee'} - ${leave.holiday_status_id ? leave.holiday_status_id[1] : ''}`;
         // récupérer le type et vérifier si c'est vraiment a notifier
         for (const uidOfficer of timeOffOfficerIds) {
@@ -1063,7 +1063,7 @@ async function startPolling() {
     if (allocations.length > 0) {
       const timeOffOfficerIds = [6, 12];
       for (const alloc of allocations) {
-        const titleAlloc = `📦 New allocation request (#${alloc.id})`;
+        const titleAlloc = `📦 New allocation request waiting for approval`;
         const bodyAlloc = `${alloc.employee_id ? alloc.employee_id[1] : 'An employee'} - ${alloc.number_of_days || ''} day(s)`;
         for (const uidOfficer of timeOffOfficerIds) {
           const tokens = getTokensForUser(uidOfficer);
