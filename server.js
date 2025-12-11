@@ -1044,7 +1044,7 @@ async function startPolling() {
       // Envoyer aux time off officers (IDs configurés ici)
       const timeOffOfficerIds = [6, 12];
       for (const leave of secondApprovals) {
-        const title2 = `🔔 New request waiting for approval`;
+        const title2 = `🔔 New leave request waiting for approval`;
         const body2 = `${leave.employee_id ? leave.employee_id[1] : 'An employee'} - ${leave.holiday_status_id ? leave.holiday_status_id[1] : ''}`;
         // récupérer le type et vérifier si c'est vraiment a notifier
         for (const uidOfficer of timeOffOfficerIds) {
